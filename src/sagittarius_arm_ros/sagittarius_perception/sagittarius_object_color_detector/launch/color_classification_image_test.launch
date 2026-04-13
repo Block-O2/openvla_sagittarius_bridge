@@ -1,29 +1,19 @@
 <launch>
   <!-- 机械臂 -->
   <arg name="robot_name" default="sgr532"/>
-  <arg name="robot_model" default="$(arg robot_name)"/>
   <include file="$(find sagittarius_moveit)/launch/demo_true.launch" />
   <node pkg="sagittarius_object_color_detector" type="sgr_ctrl.py" name="sgr_ctrl_node" output="screen" ns="$(arg robot_name)"/>
 
-  <!-- 摄像头 -->
-  <arg name="video_dev" default="/dev/usb_cam" />
-  <arg name="image_width" default="640" />
-  <arg name="image_height" default="480" />
-  <arg name="framerate" default="30" />
-  <arg name="pixel_format" default="yuyv" />
-  <arg name="io_method" default="mmap" />
-  <arg name="usb_cam_output" default="log" />
-  <arg name="usb_cam_stderr_log" default="$(env HOME)/.ros/log/usb_cam_stderr.log" />
-  <include file="$(find sagittarius_object_color_detector)/launch/usb_cam.launch">
-    <arg name="video_dev"	value="$(arg video_dev)"/>
-    <arg name="image_width" value="$(arg image_width)"/>
-    <arg name="image_height" value="$(arg image_height)"/>
-    <arg name="framerate" value="$(arg framerate)"/>
-    <arg name="pixel_format" value="$(arg pixel_format)"/>
-    <arg name="io_method" value="$(arg io_method)"/>
-    <arg name="output" value="$(arg usb_cam_output)"/>
-    <arg name="stderr_log" value="$(arg usb_cam_stderr_log)"/>
-  </include>
+  <!-- 本地测试图片发布 -->
+  <arg name="test_image" default="$(find sagittarius_object_color_detector)/test_data/sample_red_block.ppm"/>
+  <arg name="image_topic" default="/usb_cam/image_raw"/>
+  <arg name="image_rate" default="5.0"/>
+  <node pkg="sagittarius_object_color_detector" type="publish_test_image.py" name="publish_test_image_node" output="screen">
+    <param name="image_path" value="$(arg test_image)"/>
+    <param name="topic" value="$(arg image_topic)"/>
+    <param name="rate" value="$(arg image_rate)"/>
+    <param name="frame_id" value="usb_cam"/>
+  </node>
 
   <!-- 抓取例程 -->
   <arg name="vision_config" default="$(find sagittarius_object_color_detector)/config/vision_config.yaml"/>
@@ -42,9 +32,11 @@
   <arg name="drop_x" default="0.15"/>
   <arg name="drop_y" default="0.24"/>
   <arg name="drop_z" default="0.20"/>
+
   <node pkg="sagittarius_object_color_detector" type="color_classification.py" name="color_classification_node" output="screen">
     <param name ="vision_config" value = "$(arg vision_config)"/>
     <param name ="arm_name" value = "$(arg robot_name)"/>
+    <param name ="image_topic" value = "$(arg image_topic)"/>
     <param name ="groundingdino_config" value = "$(arg groundingdino_config)"/>
     <param name ="groundingdino_weights" value = "$(arg groundingdino_weights)"/>
     <param name ="default_target_text" value = "$(arg default_target_text)"/>
@@ -61,5 +53,4 @@
     <param name ="drop_y" value = "$(arg drop_y)"/>
     <param name ="drop_z" value = "$(arg drop_z)"/>
   </node>
-
 </launch>

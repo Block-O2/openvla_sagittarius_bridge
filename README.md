@@ -53,3 +53,9 @@
 ```
 
 ## 视频展示Video
+
+## 当前改造说明
+
+当前仓库中与“GroundingDINO 语言目标识别抓取”相关的详细中文记录见：
+
+`src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/README.MD`
