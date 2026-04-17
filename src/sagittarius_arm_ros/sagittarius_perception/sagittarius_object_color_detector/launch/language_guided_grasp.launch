@@ -1,0 +1,72 @@
+<launch>
+  <!-- 机械臂 -->
+  <arg name="robot_name" default="sgr532"/>
+  <arg name="robot_model" default="$(arg robot_name)"/>
+  <arg name="node_name" default="language_guided_grasp_node"/>
+  <include file="$(find sagittarius_moveit)/launch/demo_true.launch" />
+  <node pkg="sagittarius_object_color_detector" type="sgr_ctrl.py" name="sgr_ctrl_node" output="screen" ns="$(arg robot_name)"/>
+
+  <!-- 摄像头 -->
+  <arg name="video_dev" default="/dev/usb_cam" />
+  <arg name="image_width" default="640" />
+  <arg name="image_height" default="480" />
+  <arg name="framerate" default="30" />
+  <arg name="pixel_format" default="yuyv" />
+  <arg name="io_method" default="mmap" />
+  <arg name="usb_cam_output" default="log" />
+  <arg name="usb_cam_stderr_log" default="$(env HOME)/.ros/log/usb_cam_stderr.log" />
+  <include file="$(find sagittarius_object_color_detector)/launch/usb_cam.launch">
+    <arg name="video_dev"	value="$(arg video_dev)"/>
+    <arg name="image_width" value="$(arg image_width)"/>
+    <arg name="image_height" value="$(arg image_height)"/>
+    <arg name="framerate" value="$(arg framerate)"/>
+    <arg name="pixel_format" value="$(arg pixel_format)"/>
+    <arg name="io_method" value="$(arg io_method)"/>
+    <arg name="output" value="$(arg usb_cam_output)"/>
+    <arg name="stderr_log" value="$(arg usb_cam_stderr_log)"/>
+  </include>
+
+  <!-- 抓取例程 -->
+  <arg name="vision_config" default="$(find sagittarius_object_color_detector)/config/vision_config.yaml"/>
+  <arg name="perception_backend" default="grounding_dino"/>
+  <arg name="groundingdino_config" default="$(env HOME)/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"/>
+  <arg name="groundingdino_weights" default="$(env HOME)/GroundingDINO/weights/groundingdino_swint_ogc.pth"/>
+  <arg name="default_target_text" default=""/>
+  <arg name="target_topic" default="/grasp_target_text"/>
+  <arg name="device" default="cuda"/>
+  <arg name="box_threshold" default="0.35"/>
+  <arg name="text_threshold" default="0.25"/>
+  <arg name="stable_required" default="5"/>
+  <arg name="center_tolerance" default="8.0"/>
+  <arg name="pick_z" default="0.01"/>
+  <arg name="allow_start_without_groundingdino" default="false"/>
+  <arg name="allow_start_without_backend" default="$(arg allow_start_without_groundingdino)"/>
+  <arg name="drop_after_grasp" default="true"/>
+  <arg name="drop_x" default="0.15"/>
+  <arg name="drop_y" default="0.24"/>
+  <arg name="drop_z" default="0.20"/>
+  <node pkg="sagittarius_object_color_detector" type="language_guided_grasp.py" name="$(arg node_name)" output="screen">
+    <param name ="vision_config" value = "$(arg vision_config)"/>
+    <param name ="arm_name" value = "$(arg robot_name)"/>
+    <param name ="perception_backend" value = "$(arg perception_backend)"/>
+    <param name ="perception_config" value = "$(arg groundingdino_config)"/>
+    <param name ="perception_weights" value = "$(arg groundingdino_weights)"/>
+    <param name ="groundingdino_config" value = "$(arg groundingdino_config)"/>
+    <param name ="groundingdino_weights" value = "$(arg groundingdino_weights)"/>
+    <param name ="default_target_text" value = "$(arg default_target_text)"/>
+    <param name ="target_topic" value = "$(arg target_topic)"/>
+    <param name ="device" value = "$(arg device)"/>
+    <param name ="box_threshold" value = "$(arg box_threshold)"/>
+    <param name ="text_threshold" value = "$(arg text_threshold)"/>
+    <param name ="stable_required" value = "$(arg stable_required)"/>
+    <param name ="center_tolerance" value = "$(arg center_tolerance)"/>
+    <param name ="pick_z" value = "$(arg pick_z)"/>
+    <param name ="allow_start_without_groundingdino" value = "$(arg allow_start_without_groundingdino)"/>
+    <param name ="allow_start_without_backend" value = "$(arg allow_start_without_backend)"/>
+    <param name ="drop_after_grasp" value = "$(arg drop_after_grasp)"/>
+    <param name ="drop_x" value = "$(arg drop_x)"/>
+    <param name ="drop_y" value = "$(arg drop_y)"/>
+    <param name ="drop_z" value = "$(arg drop_z)"/>
+  </node>
+
+</launch>

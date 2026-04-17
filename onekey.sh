@@ -346,12 +346,12 @@ drawstar_and_display(){
 			roslaunch sagittarius_object_color_detector color_classification_fixed.launch
 			;;
 			5)
-			echo -e "${Info} 对方块进行颜色分类 (配合地图寻找投放位置)"
-			echo -e "${Info} 把投放容器任意放置在地图的 ABCD 区上，机械臂抓取方块并投放对应颜色的容器"
-			echo -e "${Info} 机械臂通过识别容器颜色确定投放区，请勿遮挡容器颜色"
+			echo -e "${Info} 语言目标识别抓取 (GroundingDINO)"
+			echo -e "${Info} 通过 /grasp_target_text 输入目标文本，机械臂识别目标并调用原有 sgr_ctrl 抓取链路"
+			echo -e "${Info} 旧的 color_classification.launch 仍保留为兼容入口"
 			echo && stty erase ^? && read -p "按回车键（Enter）继续：" foonum
-			print_command "roslaunch sagittarius_object_color_detector color_classification.launch"
-			roslaunch sagittarius_object_color_detector color_classification.launch
+			print_command "roslaunch sagittarius_object_color_detector language_guided_grasp.launch"
+			roslaunch sagittarius_object_color_detector language_guided_grasp.launch
 			;;
 			*)
 			echo -e "${Error} 错误，退出"
@@ -590,4 +590,3 @@ case "$num" in
 	echo -e "${Error} 请输入正确的数字 "
 	;;
 esac
-

@@ -1,21 +1,10 @@
 <launch>
-  <!-- 机械臂 -->
+  <!-- Compatibility wrapper. Prefer language_guided_grasp_image_test.launch. -->
   <arg name="robot_name" default="sgr532"/>
-  <include file="$(find sagittarius_moveit)/launch/demo_true.launch" />
-  <node pkg="sagittarius_object_color_detector" type="sgr_ctrl.py" name="sgr_ctrl_node" output="screen" ns="$(arg robot_name)"/>
-
-  <!-- 本地测试图片发布 -->
+  <arg name="node_name" default="color_classification_node"/>
   <arg name="test_image" default="$(find sagittarius_object_color_detector)/test_data/sample_red_block.ppm"/>
   <arg name="image_topic" default="/usb_cam/image_raw"/>
   <arg name="image_rate" default="5.0"/>
-  <node pkg="sagittarius_object_color_detector" type="publish_test_image.py" name="publish_test_image_node" output="screen">
-    <param name="image_path" value="$(arg test_image)"/>
-    <param name="topic" value="$(arg image_topic)"/>
-    <param name="rate" value="$(arg image_rate)"/>
-    <param name="frame_id" value="usb_cam"/>
-  </node>
-
-  <!-- 抓取例程 -->
   <arg name="vision_config" default="$(find sagittarius_object_color_detector)/config/vision_config.yaml"/>
   <arg name="perception_backend" default="grounding_dino"/>
   <arg name="groundingdino_config" default="$(env HOME)/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"/>
@@ -35,28 +24,29 @@
   <arg name="drop_y" default="0.24"/>
   <arg name="drop_z" default="0.20"/>
 
-  <node pkg="sagittarius_object_color_detector" type="color_classification.py" name="color_classification_node" output="screen">
-    <param name ="vision_config" value = "$(arg vision_config)"/>
-    <param name ="arm_name" value = "$(arg robot_name)"/>
-    <param name ="image_topic" value = "$(arg image_topic)"/>
-    <param name ="perception_backend" value = "$(arg perception_backend)"/>
-    <param name ="perception_config" value = "$(arg groundingdino_config)"/>
-    <param name ="perception_weights" value = "$(arg groundingdino_weights)"/>
-    <param name ="groundingdino_config" value = "$(arg groundingdino_config)"/>
-    <param name ="groundingdino_weights" value = "$(arg groundingdino_weights)"/>
-    <param name ="default_target_text" value = "$(arg default_target_text)"/>
-    <param name ="target_topic" value = "$(arg target_topic)"/>
-    <param name ="device" value = "$(arg device)"/>
-    <param name ="box_threshold" value = "$(arg box_threshold)"/>
-    <param name ="text_threshold" value = "$(arg text_threshold)"/>
-    <param name ="stable_required" value = "$(arg stable_required)"/>
-    <param name ="center_tolerance" value = "$(arg center_tolerance)"/>
-    <param name ="pick_z" value = "$(arg pick_z)"/>
-    <param name ="allow_start_without_groundingdino" value = "$(arg allow_start_without_groundingdino)"/>
-    <param name ="allow_start_without_backend" value = "$(arg allow_start_without_backend)"/>
-    <param name ="drop_after_grasp" value = "$(arg drop_after_grasp)"/>
-    <param name ="drop_x" value = "$(arg drop_x)"/>
-    <param name ="drop_y" value = "$(arg drop_y)"/>
-    <param name ="drop_z" value = "$(arg drop_z)"/>
-  </node>
+  <include file="$(find sagittarius_object_color_detector)/launch/language_guided_grasp_image_test.launch">
+    <arg name="robot_name" value="$(arg robot_name)"/>
+    <arg name="node_name" value="$(arg node_name)"/>
+    <arg name="test_image" value="$(arg test_image)"/>
+    <arg name="image_topic" value="$(arg image_topic)"/>
+    <arg name="image_rate" value="$(arg image_rate)"/>
+    <arg name="vision_config" value="$(arg vision_config)"/>
+    <arg name="perception_backend" value="$(arg perception_backend)"/>
+    <arg name="groundingdino_config" value="$(arg groundingdino_config)"/>
+    <arg name="groundingdino_weights" value="$(arg groundingdino_weights)"/>
+    <arg name="default_target_text" value="$(arg default_target_text)"/>
+    <arg name="target_topic" value="$(arg target_topic)"/>
+    <arg name="device" value="$(arg device)"/>
+    <arg name="box_threshold" value="$(arg box_threshold)"/>
+    <arg name="text_threshold" value="$(arg text_threshold)"/>
+    <arg name="stable_required" value="$(arg stable_required)"/>
+    <arg name="center_tolerance" value="$(arg center_tolerance)"/>
+    <arg name="pick_z" value="$(arg pick_z)"/>
+    <arg name="allow_start_without_groundingdino" value="$(arg allow_start_without_groundingdino)"/>
+    <arg name="allow_start_without_backend" value="$(arg allow_start_without_backend)"/>
+    <arg name="drop_after_grasp" value="$(arg drop_after_grasp)"/>
+    <arg name="drop_x" value="$(arg drop_x)"/>
+    <arg name="drop_y" value="$(arg drop_y)"/>
+    <arg name="drop_z" value="$(arg drop_z)"/>
+  </include>
 </launch>
