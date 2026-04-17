@@ -56,6 +56,8 @@
 
 ## 当前改造说明
 
-当前仓库中与“GroundingDINO 语言目标识别抓取”相关的详细中文记录见：
+当前仓库中与“语言目标识别抓取”和“可插拔感知后端架构”相关的详细中文记录见：
 
 `src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/README.MD`
+
+当前改造保留原 Sagittarius MoveIt / `sgr_ctrl` 抓取链路，同时把感知层重构为可扩展 backend 结构。GroundingDINO 是当前已实现后端，后续可以继续接入 YOLO-World、OWL-ViT、Grounded-SAM 等模型。

@@ -17,6 +17,7 @@
 - `bottle`
 
 当前节点名仍然保持为 `color_classification_node`，主脚本仍然是 `color_classification.py`。
+这两个名字是为了兼容旧 launch 和旧脚本，内部实现已经重构为“语言目标感知后端 + 坐标映射 + 抓取执行”的模块化结构。
 
 ---
 
@@ -30,12 +31,32 @@
 
 - 订阅图像话题 `/usb_cam/image_raw`
 - 订阅目标文本话题 `/grasp_target_text`
-- 加载 GroundingDINO 模型
-- 对图像做文本条件检测
+- 根据 `perception_backend` 参数创建感知后端
+- 调用统一后端接口做文本条件检测
 - 选最高分框
 - 取 bbox 中心点
 - 用 `vision_config.yaml` 做像素到机械臂平面坐标映射
 - 继续复用 `sgr_ctrl` action 完成搜索位姿、抓取、可选放置
+- 只负责流程编排，不再直接写死 GroundingDINO 的模型细节
+
+### 2.1.1 模块化感知框架
+
+`nodes/perception_framework/`
+
+作用：
+
+- 定义统一检测结果结构 `DetectionResult`
+- 定义检测框结构 `DetectionBox`
+- 定义后端配置 `BackendConfig`
+- 定义后端接口 `BasePerceptionBackend`
+- 提供后端工厂 `create_backend`
+- 提供目标选择、稳定检测、坐标映射、抓取执行的独立小模块
+
+当前已有后端：
+
+- `nodes/perception_framework/backends/grounding_dino.py`
+
+后续如果要接入 YOLO-World、OWL-ViT、Grounded-SAM 等模型，优先在 `backends/` 里新增一个 adapter，而不是继续修改 `color_classification.py`。
 
 ### 2.2 主启动文件
 
@@ -125,7 +146,7 @@
 - 用 HSV 阈值检测红绿蓝色块
 - 检测后直接抓取
 
-现在：
+第一次改造后：
 
 - 改成 GroundingDINO 文本条件检测
 - 支持默认目标文本 `~default_target_text`
@@ -148,10 +169,30 @@
 - 为了绕开 GroundingDINO 官方 `inference.py` 在当前环境里引出的 `matplotlib/supervision` 兼容问题，代码里没有直接依赖 `groundingdino.util.inference`，而是直接调用 GroundingDINO 的底层模块来完成模型加载和预测。
 - 这样做不改变功能目标，但能更稳地在当前 ROS1 + WSL 环境里运行。
 
+当前架构重构后：
+
+- `color_classification.py` 保留为 ROS 编排入口
+- GroundingDINO 细节移动到：
+  `nodes/perception_framework/backends/grounding_dino.py`
+- 检测输出统一为：
+  `DetectionResult`
+- 目标选择移动到：
+  `nodes/perception_framework/selection.py`
+- 稳定检测移动到：
+  `nodes/perception_framework/stability.py`
+- 像素到机械臂平面坐标映射移动到：
+  `nodes/perception_framework/coordinate_mapping.py`
+- `sgr_ctrl` action 调用封装到：
+  `nodes/perception_framework/execution.py`
+- 旧类名 `GroundingDINOGraspNode` 保留为别名，避免旧说明或脚本引用时完全断掉
+
 ### 3.2 `color_classification.launch`
 
 新增了这些参数：
 
+- `perception_backend`
+- `perception_config`
+- `perception_weights`
 - `groundingdino_config`
 - `groundingdino_weights`
 - `default_target_text`
@@ -167,6 +208,7 @@
 - `drop_y`
 - `drop_z`
 - `allow_start_without_groundingdino`
+- `allow_start_without_backend`
 - 相机参数透传：
   - `video_dev`
   - `image_width`
@@ -197,6 +239,21 @@
 - 修改了哪些文件
 - 当前调试结果
 - 下一步应该怎么继续
+
+### 3.5 `perception_backend_smoke_test.py`
+
+新增了一个不启动 ROS action 的模型冒烟测试脚本：
+
+`nodes/perception_backend_smoke_test.py`
+
+作用：
+
+- 读取一张本地图片
+- 加载指定 backend
+- 输入一段文本
+- 输出统一检测结果里的最高分目标
+
+这个脚本适合在不连接机械臂、不启动 MoveIt 的情况下，只验证感知后端是否能正常推理。
 
 ---
 
@@ -334,20 +391,138 @@ rostopic pub /grasp_target_text std_msgs/String "data: 'bottle'" -1
 
 1. 启动节点
 2. 读取 `vision_config.yaml`
-3. 加载 GroundingDINO
+3. 根据 `perception_backend` 创建感知后端
 4. 等待 `sgr_ctrl` action server
 5. 机械臂进入搜索位姿
 6. 订阅：
    - `/usb_cam/image_raw`
    - `/grasp_target_text`
 7. 收到目标文本后开始检测
-8. 检测到多个框时，选最高分框
-9. 连续多帧中心点稳定后，才开始抓取
-10. 取 bbox 中心点
-11. 映射到机械臂抓取平面坐标
-12. 调 `sgr_ctrl` 抓取
-13. 如果开启 `drop_after_grasp`，则执行固定点放置
-14. 抓取成功后清空目标文本
+8. 调用后端统一接口：
+   `infer(image, text_prompt) -> DetectionResult`
+9. 检测到多个框时，选最高分框
+10. 连续多帧中心点稳定后，才开始抓取
+11. 取 bbox 中心点
+12. 映射到机械臂抓取平面坐标
+13. 调 `sgr_ctrl` 抓取
+14. 如果开启 `drop_after_grasp`，则执行固定点放置
+15. 抓取成功后清空目标文本
+
+---
+
+## 6.1 模块化架构说明
+
+当前内部结构可以理解成 5 层：
+
+1. 输入层：
+   `color_classification.py` 订阅图像和目标文本
+
+2. 感知层：
+   `BasePerceptionBackend` 统一接口，当前实现是 `GroundingDinoBackend`
+
+3. 决策层：
+   `select_highest_score` 选择最高分检测框，`CenterStabilityFilter` 判断目标中心是否稳定
+
+4. 映射层：
+   `VisionPlaneMapper` 读取 `vision_config.yaml`，把像素中心映射到机械臂平面坐标
+
+5. 执行层：
+   `SagittariusGraspExecutor` 继续复用原来的 `SGRCtrlAction`
+
+这样拆分以后，机器人侧链路和模型侧链路被隔离开了。以后换模型时，原则上不用动机械臂执行逻辑。
+
+---
+
+## 6.2 统一检测结果结构
+
+所有感知后端都应该返回：
+
+`DetectionResult`
+
+主要字段：
+
+- `source_model`：后端名称，例如 `grounding_dino`
+- `timestamp`：推理时间戳
+- `image_size`：图像尺寸
+- `boxes`：候选检测框列表
+- `selected_box`：被下游选择的目标框
+- `selected_center`：被选择目标框的像素中心
+- `mask`：可选 mask，给 Grounded-SAM 等后端预留
+- `metadata`：后端额外信息
+
+每个候选框是：
+
+`DetectionBox`
+
+主要字段：
+
+- `bbox_xyxy`：`(x1, y1, x2, y2)`
+- `score`：置信度
+- `label`：模型输出标签或短语
+- `metadata`：额外信息
+
+下游选择、稳定判断、映射、抓取不应该直接依赖 GroundingDINO 的原始 tensor 输出。
+
+---
+
+## 6.3 如何增加新的感知后端
+
+如果以后要增加 YOLO-World、OWL-ViT、Grounded-SAM 等模型，推荐步骤是：
+
+1. 在这里新增文件：
+   `nodes/perception_framework/backends/your_backend.py`
+
+2. 继承：
+   `BasePerceptionBackend`
+
+3. 实现：
+   `infer(self, image_bgr, text_prompt) -> DetectionResult`
+
+4. 在这里注册 backend 名称：
+   `nodes/perception_framework/backend_factory.py`
+
+5. 启动时指定：
+   `perception_backend:=your_backend`
+
+注意：
+
+- 新后端只需要负责“输入图像和文本，输出统一 DetectionResult”
+- 不要在后端里直接控制机械臂
+- 不要在后端里写像素到机械臂坐标映射
+- 不要在后端里触发 `sgr_ctrl`
+- 这样可以保持模型层和机器人执行层低耦合
+
+---
+
+## 6.4 后端冒烟测试
+
+不连接机械臂，只测模型输出：
+
+```bash
+cd ~/sagittarius_ws
+source /mnt/d/ai_models/groundingdino-venv/bin/activate
+export PYTHONPATH=/mnt/d/ai_models/GroundingDINO:$PYTHONPATH
+
+python3 src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/nodes/perception_backend_smoke_test.py \
+  --image src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/test_data/sample_red_block.ppm \
+  --text "red block" \
+  --backend grounding_dino \
+  --config /mnt/d/ai_models/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
+  --weights /mnt/d/ai_models/GroundingDINO/weights/groundingdino_swint_ogc.pth \
+  --device cpu
+```
+
+如果成功，会看到类似：
+
+```text
+source_model: grounding_dino
+image_size: (...)
+num_boxes: ...
+selected_label: ...
+selected_score: ...
+selected_bbox_xyxy: ...
+selected_center: ...
+```
 
 ---
 
@@ -375,6 +550,9 @@ rostopic pub /grasp_target_text std_msgs/String "data: 'bottle'" -1
   - 完成 GroundingDINO 推理
   - 继续走机械臂执行链路
   - 最终出现 `Execution completed: SUCCEEDED`
+- 当前已完成模块化重构：
+  - GroundingDINO 已经从主节点中拆成可插拔后端
+  - 主节点保留旧入口，但内部变成通用 perception-to-action 编排器
 
 ### 7.2 已确认存在的问题
 
@@ -466,6 +644,17 @@ rostopic pub /grasp_target_text std_msgs/String "data: 'bottle'" -1
 ## 9. 当前改过的文件
 
 - `src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/nodes/color_classification.py`
+- `src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/nodes/perception_framework/__init__.py`
+- `src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/nodes/perception_framework/detection_types.py`
+- `src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/nodes/perception_framework/backend_factory.py`
+- `src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/nodes/perception_framework/selection.py`
+- `src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/nodes/perception_framework/stability.py`
+- `src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/nodes/perception_framework/coordinate_mapping.py`
+- `src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/nodes/perception_framework/execution.py`
+- `src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/nodes/perception_framework/backends/base.py`
+- `src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/nodes/perception_framework/backends/grounding_dino.py`
+- `src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/nodes/perception_framework/backends/__init__.py`
+- `src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/nodes/perception_backend_smoke_test.py`
 - `src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/launch/color_classification.launch`
 - `src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/launch/color_classification_image_test.launch`
 - `src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/launch/usb_cam.launch`
