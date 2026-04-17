@@ -7,7 +7,8 @@ import cv2
 
 from perception_framework.backends.base import BackendConfig
 from perception_framework.backend_factory import create_backend
-from perception_framework.selection import select_highest_score
+from perception_framework.decision import evaluate_target_selection
+from perception_framework.visualization import draw_detection_overlay
 
 
 def main():
@@ -26,6 +27,17 @@ def main():
     parser.add_argument("--device", default="cpu", help="cuda or cpu")
     parser.add_argument("--box-threshold", type=float, default=0.35)
     parser.add_argument("--text-threshold", type=float, default=0.25)
+    parser.add_argument(
+        "--min-grasp-score",
+        type=float,
+        default=0.35,
+        help="Score gate used by the grasp decision layer",
+    )
+    parser.add_argument(
+        "--output",
+        default="",
+        help="Optional path for an annotated output image",
+    )
     args = parser.parse_args()
 
     image = cv2.imread(args.image)
@@ -43,18 +55,29 @@ def main():
         )
     )
     result = backend.infer(image, args.text)
-    selected = select_highest_score(result)
+    decision = evaluate_target_selection(result, args.text, args.min_grasp_score)
+    selected = decision.selected_box
 
     print("source_model:", result.source_model)
     print("image_size:", result.image_size)
     print("num_boxes:", len(result.boxes))
+    print("decision_status:", decision.status)
+    print("decision_reason:", decision.reason)
     if selected is None:
         print("selected: None")
+        if args.output:
+            annotated = draw_detection_overlay(image, result, args.text, decision)
+            cv2.imwrite(args.output, annotated)
+            print("annotated_output:", args.output)
         return
     print("selected_label:", selected.label)
     print("selected_score:", "{:.4f}".format(selected.score))
     print("selected_bbox_xyxy:", tuple(round(value, 2) for value in selected.bbox_xyxy))
     print("selected_center:", tuple(round(value, 2) for value in selected.center))
+    if args.output:
+        annotated = draw_detection_overlay(image, result, args.text, decision)
+        cv2.imwrite(args.output, annotated)
+        print("annotated_output:", args.output)
 
 
 if __name__ == "__main__":

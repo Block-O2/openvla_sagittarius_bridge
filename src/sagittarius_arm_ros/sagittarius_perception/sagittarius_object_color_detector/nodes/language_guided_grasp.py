@@ -3,6 +3,7 @@
 
 import threading
 
+import cv2
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from sensor_msgs.msg import Image
@@ -11,9 +12,10 @@ from std_msgs.msg import String
 from perception_framework.backends.base import BackendConfig
 from perception_framework.backend_factory import create_backend
 from perception_framework.coordinate_mapping import VisionPlaneMapper
+from perception_framework.decision import evaluate_target_selection
 from perception_framework.execution import SagittariusGraspExecutor
-from perception_framework.selection import select_highest_score
 from perception_framework.stability import CenterStabilityFilter
+from perception_framework.visualization import draw_detection_overlay
 
 
 class LanguageGuidedGraspNode:
@@ -37,6 +39,13 @@ class LanguageGuidedGraspNode:
         self.device = rospy.get_param("~device", "cuda")
         self.box_threshold = float(rospy.get_param("~box_threshold", 0.35))
         self.text_threshold = float(rospy.get_param("~text_threshold", 0.25))
+        self.min_grasp_score = float(
+            rospy.get_param("~min_grasp_score", self.box_threshold)
+        )
+        self.min_target_text_length = max(
+            1,
+            int(rospy.get_param("~min_target_text_length", 2)),
+        )
         self.stable_required = max(1, int(rospy.get_param("~stable_required", 5)))
         self.center_tolerance = float(rospy.get_param("~center_tolerance", 8.0))
         self.pick_z = float(rospy.get_param("~pick_z", 0.01))
@@ -54,6 +63,18 @@ class LanguageGuidedGraspNode:
         )
         self.min_detection_interval = float(
             rospy.get_param("~min_detection_interval", 0.2)
+        )
+        self.publish_annotated_image = self._get_bool_param(
+            "~publish_annotated_image", True
+        )
+        self.annotated_image_topic = rospy.get_param(
+            "~annotated_image_topic", "/language_guided_grasp/annotated_image"
+        )
+        self.save_annotated_image = self._get_bool_param(
+            "~save_annotated_image", False
+        )
+        self.annotated_image_path = rospy.get_param(
+            "~annotated_image_path", "/tmp/language_guided_grasp_latest.jpg"
         )
         self.model_config = rospy.get_param(
             "~groundingdino_config",
@@ -102,6 +123,13 @@ class LanguageGuidedGraspNode:
             self._target_callback,
             queue_size=1,
         )
+        self.annotated_image_pub = None
+        if self.publish_annotated_image:
+            self.annotated_image_pub = rospy.Publisher(
+                self.annotated_image_topic,
+                Image,
+                queue_size=1,
+            )
         self.image_sub = rospy.Subscriber(
             self.image_topic,
             Image,
@@ -120,6 +148,11 @@ class LanguageGuidedGraspNode:
                 "Language-guided grasp node started, waiting for target text on %s",
                 self.target_topic,
             )
+        rospy.loginfo(
+            "Safe selection enabled: min_grasp_score=%.3f, annotated_image_topic=%s",
+            self.min_grasp_score,
+            self.annotated_image_topic if self.publish_annotated_image else "disabled",
+        )
         if not self.backend_ready:
             rospy.logwarn(
                 "Perception backend is not ready. Detection is disabled, but arm/camera/topic integration can still be tested."
@@ -186,13 +219,22 @@ class LanguageGuidedGraspNode:
             return
 
         result = self._run_perception(cv_image, target_text)
-        selected_box = select_highest_score(result) if result else None
-        if selected_box is None:
+        decision = evaluate_target_selection(
+            result,
+            target_text,
+            self.min_grasp_score,
+            self.min_target_text_length,
+        )
+        self._publish_detection_observation(cv_image, result, target_text, decision, msg)
+
+        if not decision.should_execute:
+            self._log_selection_decision(target_text, decision)
             with self.state_lock:
                 if not self.busy and target_text == self.current_target_text:
                     self.stability_filter.reset()
             return
 
+        selected_box = decision.selected_box
         start_grasp = False
         stable_center = None
         with self.state_lock:
@@ -222,6 +264,41 @@ class LanguageGuidedGraspNode:
                 daemon=True,
             )
             worker.start()
+
+    def _publish_detection_observation(self, cv_image, result, target_text, decision, source_msg):
+        if not self.publish_annotated_image and not self.save_annotated_image:
+            return
+
+        annotated = draw_detection_overlay(cv_image, result, target_text, decision)
+        if self.annotated_image_pub is not None:
+            try:
+                annotated_msg = self.bridge.cv2_to_imgmsg(annotated, encoding="bgr8")
+                annotated_msg.header = source_msg.header
+                self.annotated_image_pub.publish(annotated_msg)
+            except CvBridgeError as exc:
+                rospy.logwarn_throttle(
+                    5.0,
+                    "Failed to publish annotated detection image: %s",
+                    exc,
+                )
+
+        if self.save_annotated_image:
+            if not cv2.imwrite(self.annotated_image_path, annotated):
+                rospy.logwarn_throttle(
+                    5.0,
+                    "Failed to save annotated detection image to %s",
+                    self.annotated_image_path,
+                )
+
+    def _log_selection_decision(self, target_text, decision):
+        rospy.loginfo_throttle(
+            3.0,
+            "Target '%s' not selected for grasp: status=%s, candidates=%d, reason=%s",
+            target_text,
+            decision.status,
+            decision.candidate_count,
+            decision.reason,
+        )
 
     def _run_perception(self, cv_image, target_text):
         try:

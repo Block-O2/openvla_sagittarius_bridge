@@ -36,9 +36,15 @@
   <arg name="device" default="cuda"/>
   <arg name="box_threshold" default="0.35"/>
   <arg name="text_threshold" default="0.25"/>
+  <arg name="min_grasp_score" default="0.35"/>
+  <arg name="min_target_text_length" default="2"/>
   <arg name="stable_required" default="5"/>
   <arg name="center_tolerance" default="8.0"/>
   <arg name="pick_z" default="0.01"/>
+  <arg name="publish_annotated_image" default="true"/>
+  <arg name="annotated_image_topic" default="/language_guided_grasp/annotated_image"/>
+  <arg name="save_annotated_image" default="false"/>
+  <arg name="annotated_image_path" default="/tmp/language_guided_grasp_latest.jpg"/>
   <arg name="allow_start_without_groundingdino" default="false"/>
   <arg name="allow_start_without_backend" default="$(arg allow_start_without_groundingdino)"/>
   <arg name="drop_after_grasp" default="true"/>
@@ -58,9 +64,15 @@
     <param name ="device" value = "$(arg device)"/>
     <param name ="box_threshold" value = "$(arg box_threshold)"/>
     <param name ="text_threshold" value = "$(arg text_threshold)"/>
+    <param name ="min_grasp_score" value = "$(arg min_grasp_score)"/>
+    <param name ="min_target_text_length" value = "$(arg min_target_text_length)"/>
     <param name ="stable_required" value = "$(arg stable_required)"/>
     <param name ="center_tolerance" value = "$(arg center_tolerance)"/>
     <param name ="pick_z" value = "$(arg pick_z)"/>
+    <param name ="publish_annotated_image" value = "$(arg publish_annotated_image)"/>
+    <param name ="annotated_image_topic" value = "$(arg annotated_image_topic)"/>
+    <param name ="save_annotated_image" value = "$(arg save_annotated_image)"/>
+    <param name ="annotated_image_path" value = "$(arg annotated_image_path)"/>
     <param name ="allow_start_without_groundingdino" value = "$(arg allow_start_without_groundingdino)"/>
     <param name ="allow_start_without_backend" value = "$(arg allow_start_without_backend)"/>
     <param name ="drop_after_grasp" value = "$(arg drop_after_grasp)"/>

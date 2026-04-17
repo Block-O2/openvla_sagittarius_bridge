@@ -67,6 +67,8 @@ src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector
 │   └── perception_framework/
 │       ├── detection_types.py
 │       ├── backend_factory.py
+│       ├── decision.py
+│       ├── visualization.py
 │       ├── selection.py
 │       ├── stability.py
 │       ├── coordinate_mapping.py
@@ -88,6 +90,8 @@ src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector
 - `perception_framework/backends/grounding_dino.py`：GroundingDINO 后端实现
 - `perception_framework/backend_factory.py`：根据 `perception_backend` 参数创建后端
 - `perception_framework/selection.py`：目标选择逻辑，当前默认选择最高分框
+- `perception_framework/decision.py`：抓取前安全决策，区分已选中、未检测到、低置信度、无效目标
+- `perception_framework/visualization.py`：绘制检测框、标签、分数、选中中心点和决策状态
 - `perception_framework/stability.py`：连续帧中心点稳定检测
 - `perception_framework/coordinate_mapping.py`：读取 `vision_config.yaml`，把像素中心映射到机械臂平面坐标
 - `perception_framework/execution.py`：对原有 `SGRCtrlAction` 的轻量封装
@@ -109,6 +113,7 @@ src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector
 
 决策层
   select_highest_score
+  evaluate_target_selection
   CenterStabilityFilter
 
 映射层
@@ -145,6 +150,27 @@ DetectionBox
 ```
 
 下游抓取逻辑只依赖统一结构，不直接依赖 GroundingDINO 的 tensor 输出。这样以后换模型时，尽量只新增 backend，不动抓取执行侧。
+
+## 安全决策与可视化
+
+当前抓取前会经过一个明确的安全决策层：
+
+- `selected`：检测到目标，最高分候选超过 `min_grasp_score`，继续稳定检测，稳定后才抓取
+- `no_detection`：没有检测到与文本目标匹配的候选，不触发机械臂
+- `low_confidence`：有候选但分数低于 `min_grasp_score`，不触发机械臂
+- `invalid_target`：目标文本为空或过短，不触发机械臂
+
+默认会发布一张标注图，便于演示和排查：
+
+```text
+/language_guided_grasp/annotated_image
+```
+
+标注图包含检测框、候选标签、分数、选中中心点和当前决策状态。图片测试模式默认还会把最新标注图保存到：
+
+```text
+/tmp/language_guided_grasp_latest.jpg
+```
 
 ## 环境准备
 
@@ -189,6 +215,8 @@ roslaunch sagittarius_object_color_detector language_guided_grasp.launch \
   image_width:=1280 \
   image_height:=720 \
   framerate:=30 \
+  min_grasp_score:=0.35 \
+  publish_annotated_image:=true \
   groundingdino_config:=/mnt/d/ai_models/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
   groundingdino_weights:=/mnt/d/ai_models/GroundingDINO/weights/groundingdino_swint_ogc.pth \
   drop_after_grasp:=false
@@ -199,6 +227,9 @@ roslaunch sagittarius_object_color_detector language_guided_grasp.launch \
 ```bash
 roslaunch sagittarius_object_color_detector language_guided_grasp_image_test.launch \
   device:=cpu \
+  min_grasp_score:=0.35 \
+  save_annotated_image:=true \
+  annotated_image_path:=/tmp/language_guided_grasp_latest.jpg \
   groundingdino_config:=/mnt/d/ai_models/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
   groundingdino_weights:=/mnt/d/ai_models/GroundingDINO/weights/groundingdino_swint_ogc.pth \
   drop_after_grasp:=false
@@ -216,6 +247,8 @@ src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector
 roslaunch sagittarius_object_color_detector language_guided_grasp_image_test.launch \
   test_image:=/绝对路径/你的测试图片.jpg \
   device:=cpu \
+  save_annotated_image:=true \
+  annotated_image_path:=/tmp/language_guided_grasp_latest.jpg \
   groundingdino_config:=/mnt/d/ai_models/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
   groundingdino_weights:=/mnt/d/ai_models/GroundingDINO/weights/groundingdino_swint_ogc.pth \
   drop_after_grasp:=false
@@ -250,7 +283,8 @@ python3 src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_
   --backend grounding_dino \
   --config /mnt/d/ai_models/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
   --weights /mnt/d/ai_models/GroundingDINO/weights/groundingdino_swint_ogc.pth \
-  --device cpu
+  --device cpu \
+  --output /tmp/language_guided_grasp_smoke.jpg
 ```
 
 成功时会输出：
@@ -259,10 +293,32 @@ python3 src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_
 source_model: grounding_dino
 image_size: ...
 num_boxes: ...
+decision_status: selected
+decision_reason: ...
 selected_label: ...
 selected_score: ...
 selected_bbox_xyxy: ...
 selected_center: ...
+annotated_output: /tmp/language_guided_grasp_smoke.jpg
+```
+
+## 推荐演示场景
+
+1. 抓取颜色加类别目标：`red block`
+2. 抓取类别目标：`banana`
+3. 抓取类别目标：`bottle`
+4. 多物体场景中只抓取指定目标：例如画面里同时有方块和瓶子，只发布 `bottle`
+5. 请求不存在的目标：例如发布 `airplane`，确认状态为 `no_detection` 且机械臂不动作
+6. 静态图片演示：运行 `language_guided_grasp_image_test.launch`，查看 `/tmp/language_guided_grasp_latest.jpg`
+
+常用目标文本：
+
+```bash
+rostopic pub /grasp_target_text std_msgs/String "data: 'red block'" -1
+rostopic pub /grasp_target_text std_msgs/String "data: 'blue cube'" -1
+rostopic pub /grasp_target_text std_msgs/String "data: 'banana'" -1
+rostopic pub /grasp_target_text std_msgs/String "data: 'bottle'" -1
+rostopic pub /grasp_target_text std_msgs/String "data: 'airplane'" -1
 ```
 
 ## 如何增加新的感知后端
