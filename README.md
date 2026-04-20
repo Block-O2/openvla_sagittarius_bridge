@@ -73,11 +73,15 @@ src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector
 ├── launch/
 │   ├── language_guided_grasp.launch
 │   ├── language_guided_grasp_image_test.launch
+│   ├── language_guided_ai_station.launch
+│   ├── language_guided_robot_station.launch
 │   ├── color_classification.launch
 │   ├── color_classification_image_test.launch
 │   └── usb_cam.launch
 ├── nodes/
 │   ├── language_guided_grasp.py
+│   ├── language_guided_perception.py
+│   ├── language_guided_executor.py
 │   ├── color_classification.py
 │   ├── perception_backend_smoke_test.py
 │   ├── publish_test_image.py
@@ -86,6 +90,7 @@ src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector
 │       ├── detection_types.py
 │       ├── backend_factory.py
 │       ├── decision.py
+│       ├── observation.py
 │       ├── visualization.py
 │       ├── selection.py
 │       ├── stability.py
@@ -103,18 +108,72 @@ src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector
 核心职责：
 
 - `language_guided_grasp.py`：ROS 编排节点，负责接收图像和文本、调用感知后端、状态流管理、稳定判断、坐标映射、触发抓取
+- `language_guided_perception.py`：双机 AI Station 节点，只负责 GroundingDINO 推理并发布轻量 JSON 检测结果
+- `language_guided_executor.py`：双机 Robot Station 节点，订阅 JSON 检测结果，完成稳定检测、坐标映射和 `sgr_ctrl` 抓取
 - `perception_framework/detection_types.py`：统一检测结果结构 `DetectionResult` 和 `DetectionBox`
 - `perception_framework/backends/base.py`：所有感知后端的抽象接口 `BasePerceptionBackend`
 - `perception_framework/backends/grounding_dino.py`：GroundingDINO 后端实现
 - `perception_framework/backend_factory.py`：根据 `perception_backend` 参数创建后端
 - `perception_framework/selection.py`：目标选择逻辑，当前默认选择最高分框
 - `perception_framework/decision.py`：抓取前安全决策，区分已选中、未检测到、低置信度、无效目标
+- `perception_framework/observation.py`：双机模式下 JSON target observation / execution feedback 的序列化辅助
 - `perception_framework/visualization.py`：绘制检测框、标签、分数、选中中心点和决策状态
 - `perception_framework/stability.py`：连续帧中心点稳定检测
 - `perception_framework/coordinate_mapping.py`：读取 `vision_config.yaml`，把像素中心映射到机械臂平面坐标
 - `perception_framework/execution.py`：对原有 `SGRCtrlAction` 的轻量封装
 - `publish_test_image.py`：把本地图片发布成 `/usb_cam/image_raw`，用于不接真实相机时验证链路
 - `perception_backend_smoke_test.py`：不启动 ROS action，只验证感知后端推理输出
+
+## 双机部署
+
+当前分支增加了双机部署雏形，把大模型推理和机械臂执行拆成两个站点：
+
+```text
+AI Station 你的电脑
+  GroundingDINO 推理
+  /usb_cam/image_raw -> /language_guided_grasp/target_observation
+
+Robot Station 实验室电脑
+  摄像头 + Sagittarius 机械臂 + MoveIt + sgr_ctrl
+  /language_guided_grasp/target_observation -> vision_config.yaml -> sgr_ctrl
+```
+
+推荐职责分配：
+
+- 实验室电脑作为 `Robot Station`，连接机械臂和摄像头，并作为 ROS master
+- 你的电脑作为 `AI Station`，运行 GroundingDINO 和语言目标检测
+- 两台机器通过 ROS topic 传输图像、轻量 JSON 检测结果和执行反馈
+
+新增入口：
+
+- AI Station launch：`language_guided_ai_station.launch`
+- Robot Station launch：`language_guided_robot_station.launch`
+- AI Station 节点：`language_guided_perception.py`
+- Robot Station 节点：`language_guided_executor.py`
+
+双机说明文件：
+
+```text
+dual_machine/
+├── ai_station/
+│   ├── README.zh.md
+│   ├── README.en.md
+│   ├── env.example.sh
+│   └── run_ai_station.sh
+└── robot_station/
+    ├── README.zh.md
+    ├── README.en.md
+    ├── env.example.sh
+    └── run_robot_station.sh
+```
+
+最关键的中间 topic 是：
+
+```text
+/language_guided_grasp/target_observation
+```
+
+它使用 `std_msgs/String` 发送 JSON，包含目标文本、检测状态、bbox、中心点、置信度和图像尺寸。这样实验室电脑不需要安装 GroundingDINO，也不需要 GPU。
 
 ## 架构说明
 

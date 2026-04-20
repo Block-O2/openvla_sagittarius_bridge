@@ -1,0 +1,49 @@
+<launch>
+  <!-- AI station: subscribe remote camera, run GroundingDINO, publish lightweight target observations. -->
+  <arg name="node_name" default="language_guided_perception_node"/>
+  <arg name="image_topic" default="/usb_cam/image_raw"/>
+  <arg name="target_topic" default="/grasp_target_text"/>
+  <arg name="observation_topic" default="/language_guided_grasp/target_observation"/>
+  <arg name="execution_feedback_topic" default="/language_guided_grasp/execution_feedback"/>
+  <arg name="state_topic" default="/language_guided_perception/state"/>
+  <arg name="perception_backend" default="grounding_dino"/>
+  <arg name="groundingdino_config" default="$(env HOME)/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"/>
+  <arg name="groundingdino_weights" default="$(env HOME)/GroundingDINO/weights/groundingdino_swint_ogc.pth"/>
+  <arg name="default_target_text" default=""/>
+  <arg name="device" default="cuda"/>
+  <arg name="box_threshold" default="0.35"/>
+  <arg name="text_threshold" default="0.25"/>
+  <arg name="min_grasp_score" default="0.35"/>
+  <arg name="min_target_text_length" default="2"/>
+  <arg name="min_detection_interval" default="0.2"/>
+  <arg name="publish_annotated_image" default="true"/>
+  <arg name="annotated_image_topic" default="/language_guided_perception/annotated_image"/>
+  <arg name="save_annotated_image" default="false"/>
+  <arg name="annotated_image_path" default="/tmp/language_guided_perception_latest.jpg"/>
+  <arg name="allow_start_without_backend" default="false"/>
+
+  <node pkg="sagittarius_object_color_detector" type="language_guided_perception.py" name="$(arg node_name)" output="screen">
+    <param name="image_topic" value="$(arg image_topic)"/>
+    <param name="target_topic" value="$(arg target_topic)"/>
+    <param name="observation_topic" value="$(arg observation_topic)"/>
+    <param name="execution_feedback_topic" value="$(arg execution_feedback_topic)"/>
+    <param name="state_topic" value="$(arg state_topic)"/>
+    <param name="perception_backend" value="$(arg perception_backend)"/>
+    <param name="perception_config" value="$(arg groundingdino_config)"/>
+    <param name="perception_weights" value="$(arg groundingdino_weights)"/>
+    <param name="groundingdino_config" value="$(arg groundingdino_config)"/>
+    <param name="groundingdino_weights" value="$(arg groundingdino_weights)"/>
+    <param name="default_target_text" value="$(arg default_target_text)"/>
+    <param name="device" value="$(arg device)"/>
+    <param name="box_threshold" value="$(arg box_threshold)"/>
+    <param name="text_threshold" value="$(arg text_threshold)"/>
+    <param name="min_grasp_score" value="$(arg min_grasp_score)"/>
+    <param name="min_target_text_length" value="$(arg min_target_text_length)"/>
+    <param name="min_detection_interval" value="$(arg min_detection_interval)"/>
+    <param name="publish_annotated_image" value="$(arg publish_annotated_image)"/>
+    <param name="annotated_image_topic" value="$(arg annotated_image_topic)"/>
+    <param name="save_annotated_image" value="$(arg save_annotated_image)"/>
+    <param name="annotated_image_path" value="$(arg annotated_image_path)"/>
+    <param name="allow_start_without_backend" value="$(arg allow_start_without_backend)"/>
+  </node>
+</launch>
