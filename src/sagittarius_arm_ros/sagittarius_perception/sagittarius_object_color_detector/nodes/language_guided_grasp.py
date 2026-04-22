@@ -65,6 +65,12 @@ class LanguageGuidedGraspNode:
             "~allow_start_without_backend", self.allow_start_without_backend
         )
         self.drop_after_grasp = self._get_bool_param("~drop_after_grasp", True)
+        self.execute_grasp = self._get_bool_param("~execute_grasp", True)
+        self.search_pose_mode = rospy.get_param("~search_pose_mode", "none")
+        self.return_to_search_pose_after_grasp = self._get_bool_param(
+            "~return_to_search_pose_after_grasp", False
+        )
+        self.pick_orientation_mode = rospy.get_param("~pick_orientation_mode", "auto")
         self.drop_position = (
             float(rospy.get_param("~drop_x", 0.15)),
             float(rospy.get_param("~drop_y", 0.24)),
@@ -72,6 +78,9 @@ class LanguageGuidedGraspNode:
         )
         self.clear_target_after_success = self._get_bool_param(
             "~clear_target_after_success", True
+        )
+        self.clear_target_after_failure = self._get_bool_param(
+            "~clear_target_after_failure", True
         )
         self.min_detection_interval = float(
             rospy.get_param("~min_detection_interval", 0.2)
@@ -122,6 +131,11 @@ class LanguageGuidedGraspNode:
             self.mapper.params["k2"],
             self.mapper.params["b2"],
         )
+        if self.mapper.is_degenerate():
+            rospy.logwarn(
+                "vision_config mapping is degenerate: pixel center changes will not change grasp x/y. Current mapping: %s",
+                self.mapper.describe(),
+            )
 
         self.stability_filter = CenterStabilityFilter(
             self.stable_required,
@@ -129,12 +143,18 @@ class LanguageGuidedGraspNode:
         )
         self.backend = self._create_perception_backend()
 
-        self.executor = SagittariusGraspExecutor(
-            arm_name=self.arm_name,
-            pick_z=self.pick_z,
-            drop_position=self.drop_position,
-        )
-        self.executor.move_to_search_pose()
+        self.executor = None
+        if self.execute_grasp:
+            self.executor = SagittariusGraspExecutor(
+                arm_name=self.arm_name,
+                pick_z=self.pick_z,
+                drop_position=self.drop_position,
+            )
+            self.executor.move_to_search_pose(self.search_pose_mode)
+        else:
+            rospy.logwarn(
+                "execute_grasp=false: robot action client is disabled and search pose will not be commanded"
+            )
 
         self.target_sub = rospy.Subscriber(
             self.target_topic,
@@ -179,8 +199,9 @@ class LanguageGuidedGraspNode:
                 self.target_topic,
             )
         rospy.loginfo(
-            "Safe selection enabled: min_grasp_score=%.3f, annotated_image_topic=%s",
+            "Safe selection enabled: min_grasp_score=%.3f, execute_grasp=%s, annotated_image_topic=%s",
             self.min_grasp_score,
+            self.execute_grasp,
             self.annotated_image_topic if self.publish_annotated_image else "disabled",
         )
         rospy.loginfo("Pipeline state topic: %s", self.state_topic)
@@ -371,7 +392,11 @@ class LanguageGuidedGraspNode:
 
     def _grasp_target(self, center, target_text):
         grasp_success = False
-        self._set_state(STATE_GRASPING, "executing pick")
+        dry_run_success = False
+        self._set_state(
+            STATE_GRASPING,
+            "dry-run mapping only" if not self.execute_grasp else "executing pick",
+        )
         try:
             grasp_x, grasp_y = self.mapper.map_pixel_center(center)
             rospy.loginfo(
@@ -382,7 +407,18 @@ class LanguageGuidedGraspNode:
                 self.pick_z,
             )
 
-            grasp_success = self.executor.execute_pick(grasp_x, grasp_y)
+            if not self.execute_grasp:
+                dry_run_success = True
+                rospy.logwarn(
+                    "execute_grasp=false: dry run only, mapped target will not be sent to the robot"
+                )
+                return
+
+            grasp_success = self.executor.execute_pick(
+                grasp_x,
+                grasp_y,
+                orientation_mode=self.pick_orientation_mode,
+            )
             if grasp_success:
                 rospy.loginfo("Grasp succeeded for target '%s'", target_text)
                 if self.drop_after_grasp:
@@ -396,11 +432,19 @@ class LanguageGuidedGraspNode:
             else:
                 rospy.logwarn("Grasp failed for target '%s'", target_text)
         finally:
-            self.executor.move_to_search_pose()
+            if self.execute_grasp and self.return_to_search_pose_after_grasp:
+                self.executor.move_to_search_pose(self.search_pose_mode)
             with self.state_lock:
                 if (
-                    grasp_success
+                    (grasp_success or dry_run_success)
                     and self.clear_target_after_success
+                    and self.current_target_text == target_text
+                ):
+                    self.current_target_text = ""
+                elif (
+                    not grasp_success
+                    and not dry_run_success
+                    and self.clear_target_after_failure
                     and self.current_target_text == target_text
                 ):
                     self.current_target_text = ""
@@ -409,7 +453,9 @@ class LanguageGuidedGraspNode:
                     self.pending_target_text = None
                 self.stability_filter.reset()
                 self.busy = False
-                if grasp_success:
+                if dry_run_success:
+                    self._set_state(STATE_DONE, "dry-run target locked")
+                elif grasp_success:
                     self._set_state(STATE_DONE, "grasp succeeded")
                 else:
                     self._set_state(STATE_FAILED, "grasp failed")

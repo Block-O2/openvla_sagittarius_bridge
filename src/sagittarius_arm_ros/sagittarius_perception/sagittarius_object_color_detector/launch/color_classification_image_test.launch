@@ -26,8 +26,13 @@
   <arg name="annotated_image_path" default="/tmp/language_guided_grasp_latest.jpg"/>
   <arg name="allow_start_without_groundingdino" default="false"/>
   <arg name="allow_start_without_backend" default="$(arg allow_start_without_groundingdino)"/>
+  <arg name="execute_grasp" default="true"/>
+  <arg name="search_pose_mode" default="none"/>
+  <arg name="return_to_search_pose_after_grasp" default="false"/>
+  <arg name="pick_orientation_mode" default="auto"/>
   <arg name="drop_after_grasp" default="true"/>
   <arg name="clear_target_after_success" default="true"/>
+  <arg name="clear_target_after_failure" default="true"/>
   <arg name="drop_x" default="0.15"/>
   <arg name="drop_y" default="0.24"/>
   <arg name="drop_z" default="0.20"/>
@@ -59,8 +64,13 @@
     <arg name="annotated_image_path" value="$(arg annotated_image_path)"/>
     <arg name="allow_start_without_groundingdino" value="$(arg allow_start_without_groundingdino)"/>
     <arg name="allow_start_without_backend" value="$(arg allow_start_without_backend)"/>
+    <arg name="execute_grasp" value="$(arg execute_grasp)"/>
+    <arg name="search_pose_mode" value="$(arg search_pose_mode)"/>
+    <arg name="return_to_search_pose_after_grasp" value="$(arg return_to_search_pose_after_grasp)"/>
+    <arg name="pick_orientation_mode" value="$(arg pick_orientation_mode)"/>
     <arg name="drop_after_grasp" value="$(arg drop_after_grasp)"/>
     <arg name="clear_target_after_success" value="$(arg clear_target_after_success)"/>
+    <arg name="clear_target_after_failure" value="$(arg clear_target_after_failure)"/>
     <arg name="drop_x" value="$(arg drop_x)"/>
     <arg name="drop_y" value="$(arg drop_y)"/>
     <arg name="drop_z" value="$(arg drop_z)"/>

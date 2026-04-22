@@ -16,6 +16,15 @@ class VisionPlaneMapper:
         grasp_y = self.params["k2"] * pixel_x + self.params["b2"]
         return grasp_x, grasp_y
 
+    def is_degenerate(self, epsilon=1e-9):
+        """Return True when pixel changes cannot affect mapped grasp XY."""
+        return abs(self.params["k1"]) < epsilon and abs(self.params["k2"]) < epsilon
+
+    def describe(self):
+        return "x=k1*pixel_y+b1 (k1={k1:.6f}, b1={b1:.6f}), y=k2*pixel_x+b2 (k2={k2:.6f}, b2={b2:.6f})".format(
+            **self.params
+        )
+
     def _load_vision_config(self, filename):
         with open(filename, "r") as stream:
             content = yaml.safe_load(stream)
@@ -25,4 +34,3 @@ class VisionPlaneMapper:
             "k2": float(content["LinearRegression"]["k2"]),
             "b2": float(content["LinearRegression"]["b2"]),
         }
-

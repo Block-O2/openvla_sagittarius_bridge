@@ -39,11 +39,13 @@
 - `vision_config.yaml` 线性回归映射仍然保留
 - 标注图输出和状态话题可以用于演示和调试
 - busy 期间收到的新目标会先延后保存，避免中途打断正在执行的抓取
+- 2026-04-22 实机验证：单机模式下 `red block` 已经完成 GroundingDINO 检测、稳定锁定、坐标映射和 `sgr_ctrl` 抓取，日志结果为 `Grasp succeeded`
 
 当前主要限制：
 
 - 在当前 WSL2 + usbipd 环境下，同时透传机械臂串口和摄像头时可能不稳定
 - 真实相机闭环建议优先在原生 Ubuntu 或更稳定的 UVC 摄像头环境下验证
+- 当前 `vision_config.yaml` 如果仍是 `k1=0.0`、`k2=0.0`，不同像素点会映射到同一个机械臂平面坐标。也就是说模型确实根据摄像头选目标，但抓取落点还不会随目标像素位置变化，正式演示前需要手动标定。
 
 ## 主要入口
 
@@ -256,21 +258,140 @@ netifaces
 
 ## 启动方式
 
+### 单机 GPU 实机测试推荐参数
+
+你现在的使用方式是单机：同一台电脑同时连接机械臂、机械臂摄像头，并运行 GroundingDINO。因为有 RTX 4060，推荐使用：
+
+```bash
+device:=cuda
+```
+
+不要再用 `device:=cpu` 做正式测试，否则 GroundingDINO 会把 CPU 打满，推理也会很慢。
+
+单机实机推荐启动参数：
+
+```bash
+device:=cuda \
+video_dev:=/dev/video0 \
+pixel_format:=mjpeg \
+image_width:=640 \
+image_height:=480 \
+framerate:=10 \
+search_pose_mode:=define_stay \
+return_to_search_pose_after_grasp:=false \
+pick_orientation_mode:=auto \
+drop_after_grasp:=false
+```
+
+这里的含义是：
+
+- 启动后先让机械臂进入准备/观察姿态，避免机械臂挡住摄像头导致看不到桌面目标
+- 抓取结束后不强制回到硬编码姿态，避免再次突然朝上
+- 抓取动作本身优先使用动态姿态，由 `sgr_ctrl` 根据目标 XYZ 计算末端朝向
+- 第一次实机建议关闭放置动作，只验证“识别 -> 抓取”
+
+已经提供一个单机 GPU 启动脚本：
+
+```bash
+src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_single_machine_gpu_grasp.sh
+```
+
+默认 `EXECUTE_GRASP=false`，只做检测和映射，不执行真实抓取。确认无误后再设置 `EXECUTE_GRASP=true`。
+
+### 位姿与抓取姿态参数
+
+为了避免机械臂在启动或抓取结束后突然移动到硬编码姿态，当前默认行为改为“保持当前位置”：
+
+- `search_pose_mode:=none`：默认值，启动时不强制移动到固定搜索位姿
+- `search_pose_mode:=stay` / `hold_current`：兼容写法，同样表示保持当前位置
+- `search_pose_mode:=define_stay`：显式启用旧的 `ACTION_TYPE_DEFINE_STAY` 预设姿态
+- `search_pose_mode:=xyz_rpy` / `legacy`：显式启用旧的固定 XYZ+RPY 搜索位姿
+- `return_to_search_pose_after_grasp:=false`：默认值，抓取结束后不再强制回到搜索位姿
+- `return_to_search_pose_after_grasp:=true`：抓取结束后按 `search_pose_mode` 执行回位
+- `pick_orientation_mode:=auto`：默认值，抓取时优先使用 `ACTION_TYPE_PICK_XYZ`，由 `sgr_ctrl` 根据目标点动态计算末端姿态
+- `pick_orientation_mode:=fixed_rpy` / `legacy`：显式使用旧的固定 `pitch=1.57` 抓取姿态
+
+如果摄像头视野需要机械臂先抬到准备姿态，实机抓取时使用：
+
+```bash
+search_pose_mode:=define_stay \
+return_to_search_pose_after_grasp:=false \
+pick_orientation_mode:=auto \
+drop_after_grasp:=false
+```
+
+这样只在启动阶段进入观察/准备姿态，抓取结束后不会再次强制回到硬编码姿态。
+
+### 手动标定 vision_config.yaml
+
+手动标定需要准备一个 CSV 文件，记录几组点：
+
+```text
+pixel_x,pixel_y,robot_x,robot_y
+```
+
+含义：
+
+- `pixel_x,pixel_y`：目标在相机图像中的中心点，可以从标注图或日志里的 `center` 读取
+- `robot_x,robot_y`：你希望机械臂在桌面平面上抓取的实际坐标，单位是米
+
+仓库里提供了示例文件：
+
+```text
+src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/config/manual_calibration_points.example.csv
+```
+
+正式标定时复制一份：
+
+```bash
+cd ~/sagittarius_ws
+cp src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/config/manual_calibration_points.example.csv \
+   src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/config/manual_calibration_points.csv
+```
+
+把 `manual_calibration_points.csv` 里的示例数值换成你自己测到的点，建议至少 5 个点：中心、左上、右上、左下、右下。
+
+先只试算，不写入配置：
+
+```bash
+cd ~/sagittarius_ws
+python3 src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/nodes/manual_vision_calibration.py \
+  --csv src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/config/manual_calibration_points.csv \
+  --vision-config src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/config/vision_config.yaml \
+  --dry-run
+```
+
+确认输出的平均误差合理后，写回 `vision_config.yaml`：
+
+```bash
+cd ~/sagittarius_ws
+bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_manual_vision_calibration.sh
+```
+
+脚本会自动备份旧配置，备份文件形如：
+
+```text
+vision_config.yaml.bak_YYYYMMDD_HHMMSS
+```
+
 ### 真实相机闭环
 
 ```bash
 roslaunch sagittarius_object_color_detector language_guided_grasp.launch \
-  device:=cpu \
+  device:=cuda \
   video_dev:=/dev/video0 \
   pixel_format:=mjpeg \
-  image_width:=1280 \
-  image_height:=720 \
-  framerate:=30 \
+  image_width:=640 \
+  image_height:=480 \
+  framerate:=10 \
   min_grasp_score:=0.35 \
   publish_annotated_image:=true \
   state_topic:=/language_guided_grasp/state \
   groundingdino_config:=/mnt/d/ai_models/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
   groundingdino_weights:=/mnt/d/ai_models/GroundingDINO/weights/groundingdino_swint_ogc.pth \
+  search_pose_mode:=define_stay \
+  return_to_search_pose_after_grasp:=false \
+  pick_orientation_mode:=auto \
   drop_after_grasp:=false \
   clear_target_after_success:=true
 ```
@@ -279,13 +400,17 @@ roslaunch sagittarius_object_color_detector language_guided_grasp.launch \
 
 ```bash
 roslaunch sagittarius_object_color_detector language_guided_grasp_image_test.launch \
-  device:=cpu \
+  device:=cuda \
+  execute_grasp:=false \
   min_grasp_score:=0.35 \
   save_annotated_image:=true \
   annotated_image_path:=/tmp/language_guided_grasp_latest.jpg \
   state_topic:=/language_guided_grasp/state \
   groundingdino_config:=/mnt/d/ai_models/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
   groundingdino_weights:=/mnt/d/ai_models/GroundingDINO/weights/groundingdino_swint_ogc.pth \
+  search_pose_mode:=none \
+  return_to_search_pose_after_grasp:=false \
+  pick_orientation_mode:=auto \
   drop_after_grasp:=false \
   clear_target_after_success:=true
 ```
@@ -301,12 +426,16 @@ src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector
 ```bash
 roslaunch sagittarius_object_color_detector language_guided_grasp_image_test.launch \
   test_image:=/绝对路径/你的测试图片.jpg \
-  device:=cpu \
+  device:=cuda \
+  execute_grasp:=false \
   save_annotated_image:=true \
   annotated_image_path:=/tmp/language_guided_grasp_latest.jpg \
   state_topic:=/language_guided_grasp/state \
   groundingdino_config:=/mnt/d/ai_models/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
   groundingdino_weights:=/mnt/d/ai_models/GroundingDINO/weights/groundingdino_swint_ogc.pth \
+  search_pose_mode:=none \
+  return_to_search_pose_after_grasp:=false \
+  pick_orientation_mode:=auto \
   drop_after_grasp:=false \
   clear_target_after_success:=true
 ```
@@ -340,7 +469,7 @@ python3 src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_
   --backend grounding_dino \
   --config /mnt/d/ai_models/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
   --weights /mnt/d/ai_models/GroundingDINO/weights/groundingdino_swint_ogc.pth \
-  --device cpu \
+  --device cuda \
   --output /tmp/language_guided_grasp_smoke.jpg
 ```
 
