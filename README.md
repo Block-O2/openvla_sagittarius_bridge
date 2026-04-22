@@ -71,7 +71,8 @@ src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector
 │   └── SGRCtrl.action
 ├── config/
 │   ├── HSVParams.cfg
-│   └── vision_config.yaml
+│   ├── vision_config.yaml
+│   └── manual_calibration_points.example.csv
 ├── launch/
 │   ├── language_guided_grasp.launch
 │   ├── language_guided_grasp_image_test.launch
@@ -98,6 +99,10 @@ src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector
 │           └── grounding_dino.py
 ├── test_data/
 │   └── sample_red_block.ppm
+├── scripts/
+│   ├── ensure_sagittarius_serial.sh
+│   ├── run_single_machine_gpu_grasp.sh
+│   └── run_manual_vision_calibration.sh
 ├── CMakeLists.txt
 └── package.xml
 ```
@@ -117,6 +122,8 @@ src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector
 - `perception_framework/execution.py`：对原有 `SGRCtrlAction` 的轻量封装
 - `publish_test_image.py`：把本地图片发布成 `/usb_cam/image_raw`，用于不接真实相机时验证链路
 - `perception_backend_smoke_test.py`：不启动 ROS action，只验证感知后端推理输出
+- `scripts/ensure_sagittarius_serial.sh`：检查/修复 WSL 下机械臂串口 `/dev/ttyACM0` 和兼容链接 `/dev/sagittarius`
+- `nodes/manual_vision_calibration.py`：根据手动采集的像素点和机械臂平面坐标拟合 `vision_config.yaml`
 
 ## 架构说明
 
@@ -257,6 +264,90 @@ netifaces
 ```
 
 ## 启动方式
+
+### 机械臂串口初始化检查
+
+如果启动时报：
+
+```text
+open serial failed :/dev/sagittarius fail
+Failed to init device
+GetDataGram: Serial is not open
+```
+
+先不要继续做标定或抓取，先确认 WSL 是否生成了机械臂串口节点。
+
+Windows PowerShell 中确认机械臂已经 attach：
+
+```powershell
+usbipd list
+```
+
+机械臂通常显示为：
+
+```text
+2e88:4603 USB 串行设备 / HDSC CDC Device
+```
+
+如果状态不是 `Attached`，在 PowerShell 中执行：
+
+```powershell
+usbipd attach --wsl --busid <机械臂BUSID>
+```
+
+回到 Ubuntu 终端，先运行串口检查脚本：
+
+```bash
+cd ~/sagittarius_ws
+bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/ensure_sagittarius_serial.sh
+```
+
+正常结果应该能看到：
+
+```text
+/dev/ttyACM0
+/dev/sagittarius -> /dev/ttyACM0
+```
+
+如果脚本提示需要创建 `/dev/ttyACM0`，它会尝试使用 `sudo mknod`。如果你的终端要求输入密码，输入 Ubuntu 用户密码即可。
+
+如果出现下面这种 sudo 本身的权限错误：
+
+```text
+sudo: /usr/bin/sudo must be owned by uid 0 and have the setuid bit set
+```
+
+说明当前 WSL 的 sudo 权限位异常。请在 Windows PowerShell 中执行一次：
+
+```powershell
+wsl -d Ubuntu-20.04 -u root -- bash -lc "chown root:root /usr/bin/sudo /bin/su && chmod 4755 /usr/bin/sudo /bin/su"
+```
+
+然后回到 Ubuntu 重新运行串口检查脚本。
+
+如果 `lsusb` 能看到 `2e88:4603`，但是脚本仍然找不到 `/dev/ttyACM0`，通常说明 usbipd/WSL 这次 attach 不完整。推荐按顺序做：
+
+```powershell
+usbipd detach --busid <机械臂BUSID>
+usbipd attach --wsl --busid <机械臂BUSID>
+```
+
+如果仍然不行，重启 WSL 后再 attach：
+
+```powershell
+wsl --shutdown
+usbipd attach --wsl --busid <机械臂BUSID>
+```
+
+再回到 Ubuntu 运行：
+
+```bash
+lsusb
+ls -l /dev/ttyACM* /dev/sagittarius
+bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/ensure_sagittarius_serial.sh
+```
+
+只有这个检查通过后，再启动 `demo_true.launch` 或语言抓取 launch。
 
 ### 单机 GPU 实机测试推荐参数
 
