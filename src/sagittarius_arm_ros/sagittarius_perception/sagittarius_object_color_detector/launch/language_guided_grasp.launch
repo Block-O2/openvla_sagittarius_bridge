@@ -58,7 +58,7 @@
   <arg name="search_pose_mode" default="xyz_rpy"/>
   <arg name="search_pose_x" default="0.20"/>
   <arg name="search_pose_y" default="0.00"/>
-  <arg name="search_pose_z" default="0.15"/>
+  <arg name="search_pose_z" default="0.20"/>
   <arg name="search_pose_roll" default="0.0"/>
   <arg name="search_pose_pitch" default="1.57"/>
   <arg name="search_pose_yaw" default="0.0"/>
@@ -75,6 +75,15 @@
   <arg name="rejection_yaw_delta" default="0.30"/>
   <arg name="rejection_cycles" default="1"/>
   <arg name="rejection_pause_sec" default="0.15"/>
+  <arg name="place_front_view_enabled" default="true"/>
+  <arg name="place_front_view_vision_config" default="$(arg vision_config)"/>
+  <arg name="place_front_view_x" default="0.20"/>
+  <arg name="place_front_view_y" default="0.00"/>
+  <arg name="place_front_view_z" default="0.20"/>
+  <arg name="place_front_view_roll" default="0.0"/>
+  <arg name="place_front_view_pitch" default="1.57"/>
+  <arg name="place_front_view_yaw" default="0.0"/>
+  <arg name="place_scan_view_order" default="front,left,right"/>
   <arg name="scan_view_order" default="front,left,right"/>
   <arg name="scan_attempts_per_view" default="5"/>
   <arg name="scan_stable_required" default="3"/>
@@ -87,7 +96,7 @@
   <arg name="left_view_z" default="0.20"/>
   <arg name="left_view_roll" default="0.0"/>
   <arg name="left_view_pitch" default="1.57"/>
-  <arg name="left_view_yaw" default="0.45"/>
+  <arg name="left_view_yaw" default="1.57"/>
   <arg name="right_view_enabled" default="false"/>
   <arg name="right_view_vision_config" default=""/>
   <arg name="right_view_x" default="0.20"/>
@@ -95,7 +104,7 @@
   <arg name="right_view_z" default="0.20"/>
   <arg name="right_view_roll" default="0.0"/>
   <arg name="right_view_pitch" default="1.57"/>
-  <arg name="right_view_yaw" default="-0.45"/>
+  <arg name="right_view_yaw" default="-1.57"/>
   <node pkg="sagittarius_object_color_detector" type="language_guided_grasp.py" name="$(arg node_name)" output="screen">
     <param name ="vision_config" value = "$(arg vision_config)"/>
     <param name ="arm_name" value = "$(arg robot_name)"/>
@@ -145,6 +154,15 @@
     <param name ="rejection_yaw_delta" value = "$(arg rejection_yaw_delta)"/>
     <param name ="rejection_cycles" value = "$(arg rejection_cycles)"/>
     <param name ="rejection_pause_sec" value = "$(arg rejection_pause_sec)"/>
+    <param name ="place_front_view_enabled" value = "$(arg place_front_view_enabled)"/>
+    <param name ="place_front_view_vision_config" value = "$(arg place_front_view_vision_config)"/>
+    <param name ="place_front_view_x" value = "$(arg place_front_view_x)"/>
+    <param name ="place_front_view_y" value = "$(arg place_front_view_y)"/>
+    <param name ="place_front_view_z" value = "$(arg place_front_view_z)"/>
+    <param name ="place_front_view_roll" value = "$(arg place_front_view_roll)"/>
+    <param name ="place_front_view_pitch" value = "$(arg place_front_view_pitch)"/>
+    <param name ="place_front_view_yaw" value = "$(arg place_front_view_yaw)"/>
+    <param name ="place_scan_view_order" value = "$(arg place_scan_view_order)"/>
     <param name ="scan_view_order" value = "$(arg scan_view_order)"/>
     <param name ="scan_attempts_per_view" value = "$(arg scan_attempts_per_view)"/>
     <param name ="scan_stable_required" value = "$(arg scan_stable_required)"/>

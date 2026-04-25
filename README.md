@@ -248,17 +248,30 @@ pick red block and place it into blue bucket
 - `pick_target`
 - `place_target`
 
-然后按 `scan_view_order` 指定的顺序去观察位扫描，默认顺序为：
+当前推荐流程分两段：
+
+- `pick`：先在单独的高位 `pick_front` 视角锁定抓取目标
+- `place`：抓起后再按放置扫描视角去找目标区域
+
+放置阶段按 `place_scan_view_order` 指定的顺序去观察位扫描，默认顺序为：
 
 ```text
 front,left,right
 ```
 
-如果某个观察位成功锁定目标，就使用该观察位对应的标定文件完成像素到机械臂平面坐标映射。这样可以支持“桶不在正前方，而是放在左边或右边”的情况。
+如果某个观察位成功锁定放置目标，就使用该观察位对应的标定文件完成像素到机械臂平面坐标映射。这样可以支持“抓取先求稳，放置再扩大扫描范围”的情况。
 
-### 多观察位参数
+### 两阶段多观察位参数
 
-主 launch 和图片测试 launch 现在都支持：
+主 launch 现在支持：
+
+- `search_pose_*`
+  这组参数现在建议专门作为 `pick_front` 抓取观察位使用
+- `vision_config:=...`
+  这组参数建议对应 `pick_front` 的标定
+- `place_front_view_enabled:=true`
+- `place_front_view_vision_config:=...`
+- `place_front_view_x/y/z/roll/pitch/yaw:=...`
 
 - `left_view_enabled:=true`
 - `left_view_vision_config:=.../vision_config_left.yaml`
@@ -266,7 +279,7 @@ front,left,right
 - `right_view_enabled:=true`
 - `right_view_vision_config:=.../vision_config_right.yaml`
 - `right_view_x/y/z/roll/pitch/yaw:=...`
-- `scan_view_order:=front,left,right`
+- `place_scan_view_order:=front,left,right`
 - `scan_attempts_per_view:=5`
 - `scan_stable_required:=3`
 - `scan_settle_sec:=0.8`
@@ -274,18 +287,19 @@ front,left,right
 
 说明：
 
-- `front` 默认复用原来的 `search_pose_*` 和 `vision_config.yaml`
+- `pick_front` 和 `place_front` 可以相同，也可以分开单独调
 - `left/right` 必须显式提供各自的 `vision_config`
-- 默认推荐把 `left_view_yaw` 设为正值、`right_view_yaw` 设为负值，让相机真正朝左/朝右转，而不是只做平移
-- 默认推荐把 `left/right` 的观察位抬高到 `z=0.20` 左右，减少机身遮挡并扩大侧向视野
+- 默认推荐把 `pick_front` 抬高到 `z=0.20` 左右，优先保证抓取时视野更完整
+- 默认推荐把 `left/right` 的观察位也放在 `z=0.20` 左右，并让 `yaw` 接近 `+/-1.57`，真正转向左右侧进行放置扫描
 - `dynamic_place_z` 是“把物体放到桶上方并松手”的绝对 Z，高度应根据桶口高度手动设定
 
-### 多观察位标定建议
+### 两阶段标定建议
 
-推荐分别为三个观察位准备三个文件：
+推荐至少准备这些文件：
 
 ```text
-config/vision_config_front.yaml
+config/vision_config_pick_front.yaml
+config/vision_config_place_front.yaml
 config/vision_config_left.yaml
 config/vision_config_right.yaml
 ```
@@ -297,21 +311,23 @@ config/vision_config_right.yaml
 
 来给不同观察位单独标定。也就是说，不需要重写标定脚本，只要换观察位姿和输出路径即可。
 
-标定点不要三套都集中在中间。推荐思路：
+标定点不要都集中在中间。推荐思路：
 
-- `front`：覆盖桌面中间区域
+- `pick_front`：覆盖抓取常用区域，而且点位尽量拉开，不要全挤在正中心
+- `place_front`：覆盖桌面中间放置区域
 - `left`：点整体偏到 `y > 0` 的左侧区域
 - `right`：点整体偏到 `y < 0` 的右侧区域
 
 一个实用的 5 点示例：
 
 ```text
-front : 0.220,0.000 ; 0.220,0.030 ; 0.240,0.020 ; 0.240,-0.020 ; 0.260,0.000
-left  : 0.220,0.030 ; 0.220,0.060 ; 0.240,0.050 ; 0.240,0.020 ; 0.260,0.040
-right : 0.220,-0.030 ; 0.220,-0.060 ; 0.240,-0.050 ; 0.240,-0.020 ; 0.260,-0.040
+pick_front  : 0.210,-0.040 ; 0.210,0.040 ; 0.235,0.000 ; 0.260,-0.030 ; 0.260,0.030
+place_front : 0.220,-0.050 ; 0.220,0.050 ; 0.245,0.000 ; 0.270,-0.030 ; 0.270,0.030
+left        : 0.220,0.030 ; 0.230,0.070 ; 0.250,0.100 ; 0.260,0.050 ; 0.280,0.080
+right       : 0.220,-0.030 ; 0.230,-0.070 ; 0.250,-0.100 ; 0.260,-0.050 ; 0.280,-0.080
 ```
 
-这样比“三套视角都标中间那一小块”更适合多观察位扫描。
+这样比“所有视角都标桌面正中间那一小块”更适合两阶段扫描。
 
 ## 安全决策与可视化
 

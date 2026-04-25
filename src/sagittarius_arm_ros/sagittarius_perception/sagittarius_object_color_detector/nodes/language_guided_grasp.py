@@ -157,8 +157,12 @@ class LanguageGuidedGraspNode:
             0.0,
             float(rospy.get_param("~scan_settle_sec", 0.8)),
         )
+        self.place_front_view_enabled = self._get_bool_param(
+            "~place_front_view_enabled", True
+        )
         self.scan_view_order = rospy.get_param(
-            "~scan_view_order", "front,left,right"
+            "~place_scan_view_order",
+            rospy.get_param("~scan_view_order", "front,left,right"),
         )
         self.model_config = rospy.get_param(
             "~groundingdino_config",
@@ -180,6 +184,8 @@ class LanguageGuidedGraspNode:
         self.state_pub = None
         self.latest_image = None
         self.latest_header = None
+        self.pick_view = None
+        self.observation_views = []
 
         self.executor = None
         if self.execute_grasp:
@@ -199,13 +205,14 @@ class LanguageGuidedGraspNode:
             rospy.logwarn(
                 "execute_grasp=false: robot action client is disabled and observation scanning will only use the current camera pose"
             )
-            if len(self.observation_views) > 1:
-                rospy.logwarn(
-                    "Multiple observation views are configured, but only the front/current view can be used without robot motion"
-                )
-
         self.backend = self._create_perception_backend()
-        self.observation_views = self._build_observation_views()
+        mapper_cache = {}
+        self.pick_view = self._build_pick_view(mapper_cache)
+        self.observation_views = self._build_place_views(mapper_cache)
+        if not self.execute_grasp and len(self.observation_views) > 1:
+            rospy.logwarn(
+                "Multiple placement views are configured, but only the current camera pose can be used when execute_grasp=false"
+            )
 
         self.target_sub = rospy.Subscriber(
             self.target_topic,
@@ -249,7 +256,11 @@ class LanguageGuidedGraspNode:
                 self.target_topic,
             )
         rospy.loginfo(
-            "Observation views enabled: %s",
+            "Pick view enabled: %s",
+            self.pick_view["name"],
+        )
+        rospy.loginfo(
+            "Placement observation views enabled: %s",
             ", ".join(view["name"] for view in self.observation_views),
         )
         rospy.loginfo(
@@ -306,19 +317,52 @@ class LanguageGuidedGraspNode:
         )
         return backend
 
-    def _build_observation_views(self):
-        mapper_cache = {}
-        front_vision_config = rospy.get_param("~vision_config")
-        views = {
-            "front": self._build_view_entry(
+    def _build_pick_view(self, mapper_cache):
+        pick_vision_config = rospy.get_param("~vision_config")
+        return self._build_view_entry(
+            mapper_cache,
+            "pick_front",
+            pick_vision_config,
+            self.search_pose,
+            search_mode=self.search_pose_mode,
+        )
+
+    def _build_place_views(self, mapper_cache):
+        views = {}
+        if self.place_front_view_enabled:
+            front_vision_config = rospy.get_param(
+                "~place_front_view_vision_config",
+                rospy.get_param("~vision_config"),
+            )
+            views["front"] = self._build_view_entry(
                 mapper_cache,
                 "front",
                 front_vision_config,
-                self.search_pose,
-                search_mode=self.search_pose_mode,
+                self._build_pose_from_params(
+                    "place_front_view",
+                    self.search_pose,
+                ),
+                search_mode="xyz_rpy",
             )
-        }
 
+        side_defaults = {
+            "left": {
+                "x": 0.20,
+                "y": 0.08,
+                "z": 0.20,
+                "roll": 0.0,
+                "pitch": 1.57,
+                "yaw": 1.57,
+            },
+            "right": {
+                "x": 0.20,
+                "y": -0.08,
+                "z": 0.20,
+                "roll": 0.0,
+                "pitch": 1.57,
+                "yaw": -1.57,
+            },
+        }
         for side in ("left", "right"):
             enabled = self._get_bool_param("~{}_view_enabled".format(side), False)
             if not enabled:
@@ -331,14 +375,10 @@ class LanguageGuidedGraspNode:
                     side,
                 )
                 continue
-            pose = {
-                "x": float(rospy.get_param("~{}_view_x".format(side), 0.20)),
-                "y": float(rospy.get_param("~{}_view_y".format(side), 0.00)),
-                "z": float(rospy.get_param("~{}_view_z".format(side), 0.15)),
-                "roll": float(rospy.get_param("~{}_view_roll".format(side), 0.0)),
-                "pitch": float(rospy.get_param("~{}_view_pitch".format(side), 1.57)),
-                "yaw": float(rospy.get_param("~{}_view_yaw".format(side), 0.0)),
-            }
+            pose = self._build_pose_from_params(
+                "{}_view".format(side),
+                side_defaults[side],
+            )
             views[side] = self._build_view_entry(
                 mapper_cache,
                 side,
@@ -359,6 +399,20 @@ class LanguageGuidedGraspNode:
             if name in views and name not in (view["name"] for view in ordered_views):
                 ordered_views.append(views[name])
         return ordered_views
+
+    def _build_pose_from_params(self, prefix, defaults):
+        return {
+            "x": float(rospy.get_param("~{}_x".format(prefix), defaults["x"])),
+            "y": float(rospy.get_param("~{}_y".format(prefix), defaults["y"])),
+            "z": float(rospy.get_param("~{}_z".format(prefix), defaults["z"])),
+            "roll": float(
+                rospy.get_param("~{}_roll".format(prefix), defaults["roll"])
+            ),
+            "pitch": float(
+                rospy.get_param("~{}_pitch".format(prefix), defaults["pitch"])
+            ),
+            "yaw": float(rospy.get_param("~{}_yaw".format(prefix), defaults["yaw"])),
+        }
 
     def _build_view_entry(
         self,
@@ -478,7 +532,7 @@ class LanguageGuidedGraspNode:
                     self._set_state(STATE_FAILED, "invalid_place_target")
                     return
 
-                pick_observation = self._locate_target_across_views(
+                pick_observation = self._locate_pick_target(
                     step.pick_target_text,
                     "pick step {}".format(step_index),
                 )
@@ -490,24 +544,9 @@ class LanguageGuidedGraspNode:
                     self._reject_current_request(result_reason)
                     return
 
-                place_observation = None
-                if step.is_pick_and_place:
-                    place_observation = self._locate_target_across_views(
-                        step.place_target_text,
-                        "place step {}".format(step_index),
-                    )
-                    if place_observation is None:
-                        result_reason = "place target '{}' not found".format(
-                            step.place_target_text
-                        )
-                        self._set_state(STATE_FAILED, "place_target_not_found")
-                        self._reject_current_request(result_reason)
-                        return
-
                 step_success, step_dry_run, step_reason = self._execute_task(
                     step,
                     pick_observation,
-                    place_observation,
                     step_index=step_index,
                     total_steps=len(task.steps),
                 )
@@ -526,6 +565,11 @@ class LanguageGuidedGraspNode:
                 result_reason,
             )
 
+    def _locate_pick_target(self, target_text, stage_name):
+        if not self._move_to_pick_view():
+            return None
+        return self._locate_target_in_view(self.pick_view, target_text, stage_name)
+
     def _locate_target_across_views(self, target_text, stage_name):
         for view in self.observation_views:
             if not self._move_to_view(view):
@@ -534,6 +578,14 @@ class LanguageGuidedGraspNode:
             if observation is not None:
                 return observation
         return None
+
+    def _move_to_pick_view(self):
+        if self.executor is None:
+            return True
+        moved = self.executor.move_to_search_pose(self.pick_view["search_mode"])
+        if moved and self.scan_settle_sec > 0.0:
+            rospy.sleep(self.scan_settle_sec)
+        return moved
 
     def _move_to_view(self, view):
         if self.executor is None:
@@ -546,10 +598,7 @@ class LanguageGuidedGraspNode:
             return True
 
         label = "{} observation view".format(view["name"])
-        if view["name"] == "front":
-            moved = self.executor.move_to_search_pose(view["search_mode"])
-        else:
-            moved = self.executor.move_to_pose(view["pose"], label)
+        moved = self.executor.move_to_pose(view["pose"], label)
         if moved and self.scan_settle_sec > 0.0:
             rospy.sleep(self.scan_settle_sec)
         return moved
@@ -641,7 +690,7 @@ class LanguageGuidedGraspNode:
                 rospy.sleep(self.scan_retry_interval)
         return None
 
-    def _execute_task(self, step: TaskStep, pick_observation, place_observation, step_index=1, total_steps=1):
+    def _execute_task(self, step: TaskStep, pick_observation, step_index=1, total_steps=1):
         self._set_state(
             STATE_GRASPING,
             "executing pick step {}/{} for '{}'".format(
@@ -658,21 +707,14 @@ class LanguageGuidedGraspNode:
             pick_observation.arm_y,
             self.pick_z,
         )
-        if place_observation is not None:
-            rospy.loginfo(
-                "Place target '%s' selected from %s view: x=%.4f, y=%.4f, z=%.4f",
-                step.place_target_text,
-                place_observation.view_name,
-                place_observation.arm_x,
-                place_observation.arm_y,
-                self.dynamic_place_z,
-            )
 
         if not self.execute_grasp:
-            rospy.logwarn(
-                "execute_grasp=false: dry run only, mapped task will not be sent to the robot"
+            return self._execute_dry_run_task(
+                step,
+                pick_observation,
+                step_index=step_index,
+                total_steps=total_steps,
             )
-            return True, True, "dry-run task planned"
 
         pick_success = self.executor.execute_pick(
             pick_observation.arm_x,
@@ -684,7 +726,27 @@ class LanguageGuidedGraspNode:
             return False, False, "grasp failed"
 
         rospy.loginfo("Grasp succeeded for target '%s'", step.pick_target_text)
-        if place_observation is not None:
+        if step.place_target_text:
+            place_observation = self._locate_target_across_views(
+                step.place_target_text,
+                "place step {}".format(step_index),
+            )
+            if place_observation is None:
+                result_reason = "place target '{}' not found".format(
+                    step.place_target_text
+                )
+                self._set_state(STATE_FAILED, "place_target_not_found")
+                self._reject_current_request(result_reason)
+                return False, False, result_reason
+
+            rospy.loginfo(
+                "Place target '%s' selected from %s view: x=%.4f, y=%.4f, z=%.4f",
+                step.place_target_text,
+                place_observation.view_name,
+                place_observation.arm_x,
+                place_observation.arm_y,
+                self.dynamic_place_z,
+            )
             self._set_state(
                 STATE_PLACING,
                 "placing step {}/{} into '{}'".format(
@@ -725,6 +787,35 @@ class LanguageGuidedGraspNode:
             step_index,
             total_steps,
         )
+
+    def _execute_dry_run_task(self, step, pick_observation, step_index=1, total_steps=1):
+        rospy.logwarn(
+            "execute_grasp=false: dry run only, mapped task will not be sent to the robot"
+        )
+        if not step.place_target_text:
+            return True, True, "dry-run pick planned"
+
+        place_observation = self._locate_target_across_views(
+            step.place_target_text,
+            "place step {}".format(step_index),
+        )
+        if place_observation is None:
+            result_reason = "place target '{}' not found".format(
+                step.place_target_text
+            )
+            self._set_state(STATE_FAILED, "place_target_not_found")
+            self._reject_current_request(result_reason)
+            return False, False, result_reason
+
+        rospy.loginfo(
+            "Dry-run place target '%s' selected from %s view: x=%.4f, y=%.4f, z=%.4f",
+            step.place_target_text,
+            place_observation.view_name,
+            place_observation.arm_x,
+            place_observation.arm_y,
+            self.dynamic_place_z,
+        )
+        return True, True, "dry-run task planned"
 
     def _reject_current_request(self, reason_text):
         rospy.logwarn("Rejecting current request: %s", reason_text)
