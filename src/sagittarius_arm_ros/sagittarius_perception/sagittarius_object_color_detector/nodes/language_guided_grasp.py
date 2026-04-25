@@ -78,6 +78,9 @@ class LanguageGuidedGraspNode:
         self.drop_after_grasp = self._get_bool_param("~drop_after_grasp", True)
         self.execute_grasp = self._get_bool_param("~execute_grasp", True)
         self.search_pose_mode = rospy.get_param("~search_pose_mode", "none")
+        self.move_to_search_pose_on_startup = self._get_bool_param(
+            "~move_to_search_pose_on_startup", False
+        )
         self.search_pose = {
             "x": float(rospy.get_param("~search_pose_x", 0.20)),
             "y": float(rospy.get_param("~search_pose_y", 0.00)),
@@ -186,7 +189,12 @@ class LanguageGuidedGraspNode:
                 drop_position=self.drop_position,
                 search_pose=self.search_pose,
             )
-            self.executor.move_to_search_pose(self.search_pose_mode)
+            if self.move_to_search_pose_on_startup:
+                self.executor.move_to_search_pose(self.search_pose_mode)
+            else:
+                rospy.loginfo(
+                    "Startup will keep the current/home pose; observation view scanning begins after a target command arrives"
+                )
         else:
             rospy.logwarn(
                 "execute_grasp=false: robot action client is disabled and observation scanning will only use the current camera pose"

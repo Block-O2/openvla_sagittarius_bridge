@@ -54,6 +54,7 @@
   <arg name="allow_start_without_groundingdino" default="false"/>
   <arg name="allow_start_without_backend" default="$(arg allow_start_without_groundingdino)"/>
   <arg name="execute_grasp" default="true"/>
+  <arg name="move_to_search_pose_on_startup" default="false"/>
   <arg name="search_pose_mode" default="xyz_rpy"/>
   <arg name="search_pose_x" default="0.20"/>
   <arg name="search_pose_y" default="0.00"/>
@@ -123,6 +124,7 @@
     <param name ="allow_start_without_groundingdino" value = "$(arg allow_start_without_groundingdino)"/>
     <param name ="allow_start_without_backend" value = "$(arg allow_start_without_backend)"/>
     <param name ="execute_grasp" value = "$(arg execute_grasp)"/>
+    <param name ="move_to_search_pose_on_startup" value = "$(arg move_to_search_pose_on_startup)"/>
     <param name ="search_pose_mode" value = "$(arg search_pose_mode)"/>
     <param name ="search_pose_x" value = "$(arg search_pose_x)"/>
     <param name ="search_pose_y" value = "$(arg search_pose_y)"/>
