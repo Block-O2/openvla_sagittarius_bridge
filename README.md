@@ -1,4 +1,6 @@
-# openvla_sagittarius_bridge
+# sagittarius-semantic-grasp
+
+Sagittarius 机械臂语言引导语义抓取项目
 
 ## 项目定位
 
@@ -835,7 +837,7 @@ xdg-open /tmp/language_guided_grasp_latest.jpg
 - 改进相机标定和手眼标定，让像素到机械臂坐标的映射更稳健
 - 扩展 pick-and-place 策略，例如根据类别选择不同放置区，而不是固定放置点
 - 增加更完整的状态机和恢复策略，例如抓取失败后自动回退、重新检测或请求人工确认
-- 在当前语言抓取基础上进一步接入 OpenVLA / VLM 策略，用视觉语言模型产生更高层任务决策
+- 在当前语言抓取基础上进一步接入更强的 VLM / 多模态策略，用视觉语言模型产生更高层任务决策
 
 ## 兼容说明
 
