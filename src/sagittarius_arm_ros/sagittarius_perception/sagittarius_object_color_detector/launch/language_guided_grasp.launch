@@ -76,7 +76,7 @@
   <arg name="left_view_vision_config" default=""/>
   <arg name="left_view_x" default="0.20"/>
   <arg name="left_view_y" default="0.08"/>
-  <arg name="left_view_z" default="0.15"/>
+  <arg name="left_view_z" default="0.20"/>
   <arg name="left_view_roll" default="0.0"/>
   <arg name="left_view_pitch" default="1.57"/>
   <arg name="left_view_yaw" default="0.45"/>
@@ -84,7 +84,7 @@
   <arg name="right_view_vision_config" default=""/>
   <arg name="right_view_x" default="0.20"/>
   <arg name="right_view_y" default="-0.08"/>
-  <arg name="right_view_z" default="0.15"/>
+  <arg name="right_view_z" default="0.20"/>
   <arg name="right_view_roll" default="0.0"/>
   <arg name="right_view_pitch" default="1.57"/>
   <arg name="right_view_yaw" default="-0.45"/>

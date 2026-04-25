@@ -226,9 +226,22 @@ class SGRCtrlActionServer:
                 # 动态计算末端姿态
                 roll, pitch, yaw = self.sgr_tool.ee_xyz_get_rpy(goal.pos_x, goal.pos_y, goal.pos_z)
             
+            # Keep observation/custom XYZ_RPY moves literal. The grasp offset is
+            # only appropriate for pick/place style actions where the target
+            # pose describes the grasp point instead of the wrist pose.
+            ee_type = 'pose'
+            if goal.action_type in [
+                SGRCtrlGoal.ACTION_TYPE_PICK_XYZ,
+                SGRCtrlGoal.ACTION_TYPE_PICK_XYZ_RPY,
+                SGRCtrlGoal.ACTION_TYPE_PUT_XYZ,
+                SGRCtrlGoal.ACTION_TYPE_PUT_XYZ_RPY
+            ]:
+                ee_type = 'grasp'
+
             x, y, z, roll, pitch, yaw = self.sgr_tool.ee_target_offset(
                 goal.pos_x, goal.pos_y, goal.pos_z,
-                roll, pitch, yaw
+                roll, pitch, yaw,
+                ee_type=ee_type,
             )
 
             # 检查姿态是否能到达
