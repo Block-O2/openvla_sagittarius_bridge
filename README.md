@@ -26,6 +26,8 @@ Sagittarius 机械臂语言引导语义抓取项目
 - 增加连续帧稳定检测和 busy 保护，降低瞬时误检或重复触发导致的误抓风险
 - 增加标注图和状态话题，方便演示时解释“模型看到了什么、为什么抓/为什么不抓”
 - 提供静态图片可控验证模式，在 WSL 相机/串口不稳定时仍然可以复现实验链路
+- 支持多观察位扫描：可以配置 `front / left / right` 三个观察位，并为每个观察位使用独立标定文件
+- 支持轻量任务级命令拆解，例如 `抓红色方框放进蓝色桶里面`，先定位抓取目标，再定位放置目标
 - 架构正在向可插拔感知后端演进，未来可以接入 YOLO-World、OWL-ViT、Grounded-SAM 等模型
 - 保留未来双机部署可能性：一台机器跑大模型推理，另一台机器负责相机和机械臂控制
 - 面向资源受限、硬件不稳定环境做了工程化折中，更符合学生项目真实落地过程
@@ -42,12 +44,14 @@ Sagittarius 机械臂语言引导语义抓取项目
 - 标注图输出和状态话题可以用于演示和调试
 - busy 期间收到的新目标会先延后保存，避免中途打断正在执行的抓取
 - 2026-04-22 实机验证：单机模式下 `red block` 已经完成 GroundingDINO 检测、稳定锁定、坐标映射和 `sgr_ctrl` 抓取，日志结果为 `Grasp succeeded`
+- 2026-04-25 代码升级：支持多观察位扫描与动态放置目标，允许先扫 `front / left / right`，再执行 `pick -> place`
 
 当前主要限制：
 
 - 在当前 WSL2 + usbipd 环境下，同时透传机械臂串口和摄像头时可能不稳定
 - 真实相机闭环建议优先在原生 Ubuntu 或更稳定的 UVC 摄像头环境下验证
 - 当前 `vision_config.yaml` 如果仍是 `k1=0.0`、`k2=0.0`，不同像素点会映射到同一个机械臂平面坐标。也就是说模型确实根据摄像头选目标，但抓取落点还不会随目标像素位置变化，正式演示前需要手动标定。
+- 多观察位模式下，每个观察位都必须单独标定。不能直接复用 `front` 的 `vision_config.yaml` 去解释 `left/right` 视角下的像素坐标。
 
 ## 主要入口
 
@@ -157,6 +161,14 @@ src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector
   SGRCtrlAction
 ```
 
+在多观察位任务模式下，执行前会先跑一个轻量扫描流程：
+
+```text
+任务文本 -> pick/place 目标拆解 -> front/left/right 依次观察
+         -> 用各观察位自己的 vision_config 映射到机械臂平面
+         -> pick -> place
+```
+
 统一感知输出结构：
 
 ```text
@@ -215,6 +227,73 @@ rostopic echo /language_guided_grasp/state
 ```
 
 如果抓取执行期间又收到新的目标文本，节点不会立即打断机械臂动作，而是先缓存为 pending target，当前动作结束后再进入下一轮检测。
+
+## 多观察位动态放置
+
+现在除了单目标文本，例如：
+
+```text
+red block
+```
+
+也支持轻量任务级文本，例如：
+
+```text
+抓红色方框放进蓝色桶里面
+pick red block and place it into blue bucket
+```
+
+节点会先把文本拆成：
+
+- `pick_target`
+- `place_target`
+
+然后按 `scan_view_order` 指定的顺序去观察位扫描，默认顺序为：
+
+```text
+front,left,right
+```
+
+如果某个观察位成功锁定目标，就使用该观察位对应的标定文件完成像素到机械臂平面坐标映射。这样可以支持“桶不在正前方，而是放在左边或右边”的情况。
+
+### 多观察位参数
+
+主 launch 和图片测试 launch 现在都支持：
+
+- `left_view_enabled:=true`
+- `left_view_vision_config:=.../vision_config_left.yaml`
+- `left_view_x/y/z/roll/pitch/yaw:=...`
+- `right_view_enabled:=true`
+- `right_view_vision_config:=.../vision_config_right.yaml`
+- `right_view_x/y/z/roll/pitch/yaw:=...`
+- `scan_view_order:=front,left,right`
+- `scan_attempts_per_view:=5`
+- `scan_stable_required:=3`
+- `scan_settle_sec:=0.8`
+- `dynamic_place_z:=0.20`
+
+说明：
+
+- `front` 默认复用原来的 `search_pose_*` 和 `vision_config.yaml`
+- `left/right` 必须显式提供各自的 `vision_config`
+- `dynamic_place_z` 是“把物体放到桶上方并松手”的绝对 Z，高度应根据桶口高度手动设定
+
+### 多观察位标定建议
+
+推荐分别为三个观察位准备三个文件：
+
+```text
+config/vision_config_front.yaml
+config/vision_config_left.yaml
+config/vision_config_right.yaml
+```
+
+现有 `language_guided_calibration.py` 已经支持通过不同的：
+
+- `~vision_config`
+- `~observe_x/y/z/roll/pitch/yaw`
+
+来给不同观察位单独标定。也就是说，不需要重写标定脚本，只要换观察位姿和输出路径即可。
 
 ## 安全决策与可视化
 

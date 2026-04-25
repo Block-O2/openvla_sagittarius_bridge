@@ -56,6 +56,28 @@
   <arg name="drop_x" default="0.15"/>
   <arg name="drop_y" default="0.24"/>
   <arg name="drop_z" default="0.20"/>
+  <arg name="dynamic_place_z" default="$(arg drop_z)"/>
+  <arg name="scan_view_order" default="front,left,right"/>
+  <arg name="scan_attempts_per_view" default="5"/>
+  <arg name="scan_stable_required" default="3"/>
+  <arg name="scan_retry_interval" default="0.2"/>
+  <arg name="scan_settle_sec" default="0.8"/>
+  <arg name="left_view_enabled" default="false"/>
+  <arg name="left_view_vision_config" default=""/>
+  <arg name="left_view_x" default="0.20"/>
+  <arg name="left_view_y" default="0.08"/>
+  <arg name="left_view_z" default="0.15"/>
+  <arg name="left_view_roll" default="0.0"/>
+  <arg name="left_view_pitch" default="1.57"/>
+  <arg name="left_view_yaw" default="0.0"/>
+  <arg name="right_view_enabled" default="false"/>
+  <arg name="right_view_vision_config" default=""/>
+  <arg name="right_view_x" default="0.20"/>
+  <arg name="right_view_y" default="-0.08"/>
+  <arg name="right_view_z" default="0.15"/>
+  <arg name="right_view_roll" default="0.0"/>
+  <arg name="right_view_pitch" default="1.57"/>
+  <arg name="right_view_yaw" default="0.0"/>
 
   <node pkg="sagittarius_object_color_detector" type="language_guided_grasp.py" name="$(arg node_name)" output="screen">
     <param name ="vision_config" value = "$(arg vision_config)"/>
@@ -101,5 +123,27 @@
     <param name ="drop_x" value = "$(arg drop_x)"/>
     <param name ="drop_y" value = "$(arg drop_y)"/>
     <param name ="drop_z" value = "$(arg drop_z)"/>
+    <param name ="dynamic_place_z" value = "$(arg dynamic_place_z)"/>
+    <param name ="scan_view_order" value = "$(arg scan_view_order)"/>
+    <param name ="scan_attempts_per_view" value = "$(arg scan_attempts_per_view)"/>
+    <param name ="scan_stable_required" value = "$(arg scan_stable_required)"/>
+    <param name ="scan_retry_interval" value = "$(arg scan_retry_interval)"/>
+    <param name ="scan_settle_sec" value = "$(arg scan_settle_sec)"/>
+    <param name ="left_view_enabled" value = "$(arg left_view_enabled)"/>
+    <param name ="left_view_vision_config" value = "$(arg left_view_vision_config)"/>
+    <param name ="left_view_x" value = "$(arg left_view_x)"/>
+    <param name ="left_view_y" value = "$(arg left_view_y)"/>
+    <param name ="left_view_z" value = "$(arg left_view_z)"/>
+    <param name ="left_view_roll" value = "$(arg left_view_roll)"/>
+    <param name ="left_view_pitch" value = "$(arg left_view_pitch)"/>
+    <param name ="left_view_yaw" value = "$(arg left_view_yaw)"/>
+    <param name ="right_view_enabled" value = "$(arg right_view_enabled)"/>
+    <param name ="right_view_vision_config" value = "$(arg right_view_vision_config)"/>
+    <param name ="right_view_x" value = "$(arg right_view_x)"/>
+    <param name ="right_view_y" value = "$(arg right_view_y)"/>
+    <param name ="right_view_z" value = "$(arg right_view_z)"/>
+    <param name ="right_view_roll" value = "$(arg right_view_roll)"/>
+    <param name ="right_view_pitch" value = "$(arg right_view_pitch)"/>
+    <param name ="right_view_yaw" value = "$(arg right_view_yaw)"/>
   </node>
 </launch>

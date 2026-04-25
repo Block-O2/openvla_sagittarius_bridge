@@ -43,31 +43,16 @@ class SagittariusGraspExecutor:
             rospy.loginfo("Keeping current robot pose because search_pose_mode=%s", mode)
             return True
 
-        goal = SGRCtrlGoal()
-        goal.grasp_type = goal.GRASP_NONE
         if mode in ("define_stay", "preset_stay"):
             rospy.logwarn(
                 "search_pose_mode=%s uses legacy joint preset and may point the camera away from the table; prefer camera_down",
                 mode,
             )
+            goal = SGRCtrlGoal()
+            goal.grasp_type = goal.GRASP_NONE
             goal.action_type = goal.ACTION_TYPE_DEFINE_STAY
         elif mode in ("camera_down", "table_view", "down", "xyz_rpy", "search", "legacy"):
-            goal.action_type = goal.ACTION_TYPE_XYZ_RPY
-            goal.pos_x = float(self.search_pose["x"])
-            goal.pos_y = float(self.search_pose["y"])
-            goal.pos_z = float(self.search_pose["z"])
-            goal.pos_roll = float(self.search_pose["roll"])
-            goal.pos_pitch = float(self.search_pose["pitch"])
-            goal.pos_yaw = float(self.search_pose["yaw"])
-            rospy.loginfo(
-                "Moving to camera/table search pose xyz=(%.3f, %.3f, %.3f), rpy=(%.3f, %.3f, %.3f)",
-                goal.pos_x,
-                goal.pos_y,
-                goal.pos_z,
-                goal.pos_roll,
-                goal.pos_pitch,
-                goal.pos_yaw,
-            )
+            return self.move_to_pose(self.search_pose, "camera/table search pose")
         else:
             rospy.logwarn(
                 "Unknown search_pose_mode=%s, keeping current pose instead of using a hard-coded preset",
@@ -80,6 +65,33 @@ class SagittariusGraspExecutor:
             rospy.logwarn("Failed to move to search pose mode '%s', result=%s", mode, result)
             return False
         rospy.loginfo("Moved to search/startup pose mode '%s'", mode)
+        return True
+
+    def move_to_pose(self, pose, label="observation pose"):
+        goal = SGRCtrlGoal()
+        goal.grasp_type = goal.GRASP_NONE
+        goal.action_type = goal.ACTION_TYPE_XYZ_RPY
+        goal.pos_x = float(pose["x"])
+        goal.pos_y = float(pose["y"])
+        goal.pos_z = float(pose["z"])
+        goal.pos_roll = float(pose["roll"])
+        goal.pos_pitch = float(pose["pitch"])
+        goal.pos_yaw = float(pose["yaw"])
+        rospy.loginfo(
+            "Moving to %s xyz=(%.3f, %.3f, %.3f), rpy=(%.3f, %.3f, %.3f)",
+            label,
+            goal.pos_x,
+            goal.pos_y,
+            goal.pos_z,
+            goal.pos_roll,
+            goal.pos_pitch,
+            goal.pos_yaw,
+        )
+        result = self._send_goal(goal)
+        if result != SGRCtrlResult.SUCCESS:
+            rospy.logwarn("Failed to move to %s, result=%s", label, result)
+            return False
+        rospy.loginfo("Moved to %s", label)
         return True
 
     def execute_pick(self, grasp_x, grasp_y, orientation_mode="auto"):
@@ -120,14 +132,27 @@ class SagittariusGraspExecutor:
         return False
 
     def execute_drop(self):
+        return self.execute_drop_at(
+            self.drop_position[0],
+            self.drop_position[1],
+            self.drop_position[2],
+        )
+
+    def execute_drop_at(self, drop_x, drop_y, drop_z):
         goal = SGRCtrlGoal()
         goal.action_type = goal.ACTION_TYPE_PUT_XYZ
-        goal.pos_x = self.drop_position[0]
-        goal.pos_y = self.drop_position[1]
-        goal.pos_z = self.drop_position[2]
+        goal.pos_x = float(drop_x)
+        goal.pos_y = float(drop_y)
+        goal.pos_z = float(drop_z)
         result = self._send_goal(goal)
         if result != SGRCtrlResult.SUCCESS:
-            rospy.logwarn("Drop action failed, result=%s", result)
+            rospy.logwarn(
+                "Drop action failed at x=%.4f, y=%.4f, z=%.4f, result=%s",
+                goal.pos_x,
+                goal.pos_y,
+                goal.pos_z,
+                result,
+            )
             return False
         return True
 

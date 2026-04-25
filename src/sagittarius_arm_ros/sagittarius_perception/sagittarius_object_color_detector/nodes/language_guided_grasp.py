@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 
 import threading
+import time
+from dataclasses import dataclass
 
 import cv2
 import rospy
@@ -15,6 +17,7 @@ from perception_framework.coordinate_mapping import VisionPlaneMapper
 from perception_framework.decision import evaluate_target_selection
 from perception_framework.execution import SagittariusGraspExecutor
 from perception_framework.stability import CenterStabilityFilter
+from perception_framework.task_parsing import TaskCommand, parse_task_command
 from perception_framework.visualization import draw_detection_overlay
 
 
@@ -27,16 +30,24 @@ STATE_DONE = "done"
 STATE_FAILED = "failed"
 
 
-class LanguageGuidedGraspNode:
-    """Orchestrates image/text input, perception, mapping, and grasp execution.
+@dataclass
+class TargetObservation:
+    target_text: str
+    view_name: str
+    center: tuple
+    score: float
+    label: str
+    arm_x: float
+    arm_y: float
 
-    This is the canonical node for the text-target to grasp pipeline. The old
-    color_classification.py entry point remains as a compatibility wrapper.
-    """
+
+class LanguageGuidedGraspNode:
+    """Orchestrates image/text input, perception, mapping, and grasp execution."""
 
     def __init__(self):
         self.bridge = CvBridge()
         self.state_lock = threading.Lock()
+        self.image_lock = threading.Lock()
 
         self.arm_name = rospy.get_param("~arm_name", "sgr532")
         self.image_topic = rospy.get_param("~image_topic", "/usb_cam/image_raw")
@@ -84,14 +95,14 @@ class LanguageGuidedGraspNode:
             float(rospy.get_param("~drop_y", 0.24)),
             float(rospy.get_param("~drop_z", 0.20)),
         )
+        self.dynamic_place_z = float(
+            rospy.get_param("~dynamic_place_z", self.drop_position[2])
+        )
         self.clear_target_after_success = self._get_bool_param(
             "~clear_target_after_success", True
         )
         self.clear_target_after_failure = self._get_bool_param(
             "~clear_target_after_failure", True
-        )
-        self.min_detection_interval = float(
-            rospy.get_param("~min_detection_interval", 0.2)
         )
         self.publish_annotated_image = self._get_bool_param(
             "~publish_annotated_image", True
@@ -112,6 +123,29 @@ class LanguageGuidedGraspNode:
         self.raw_image_path = rospy.get_param(
             "~raw_image_path", "/tmp/language_guided_grasp_raw.jpg"
         )
+        self.scan_attempts_per_view = max(
+            1,
+            int(rospy.get_param("~scan_attempts_per_view", self.stable_required)),
+        )
+        self.scan_stable_required = max(
+            1,
+            int(rospy.get_param("~scan_stable_required", self.stable_required)),
+        )
+        self.scan_attempts_per_view = max(
+            self.scan_attempts_per_view,
+            self.scan_stable_required,
+        )
+        self.scan_retry_interval = max(
+            0.0,
+            float(rospy.get_param("~scan_retry_interval", 0.2)),
+        )
+        self.scan_settle_sec = max(
+            0.0,
+            float(rospy.get_param("~scan_settle_sec", 0.8)),
+        )
+        self.scan_view_order = rospy.get_param(
+            "~scan_view_order", "front,left,right"
+        )
         self.model_config = rospy.get_param(
             "~groundingdino_config",
             rospy.get_param("~perception_config", ""),
@@ -127,33 +161,14 @@ class LanguageGuidedGraspNode:
         self.pending_target_text = None
         self.busy = False
         self.backend_ready = False
-        self.last_detection_time = rospy.Time(0)
         self.pipeline_state = None
         self.pipeline_state_reason = ""
         self.state_pub = None
+        self.latest_image = None
+        self.latest_header = None
 
-        self.mapper = VisionPlaneMapper(rospy.get_param("~vision_config"))
-        rospy.loginfo(
-            "x axis k and b: %.6f, %.6f",
-            self.mapper.params["k1"],
-            self.mapper.params["b1"],
-        )
-        rospy.loginfo(
-            "y axis k and b: %.6f, %.6f",
-            self.mapper.params["k2"],
-            self.mapper.params["b2"],
-        )
-        if self.mapper.is_degenerate():
-            rospy.logwarn(
-                "vision_config mapping is degenerate: pixel center changes will not change grasp x/y. Current mapping: %s",
-                self.mapper.describe(),
-            )
-
-        self.stability_filter = CenterStabilityFilter(
-            self.stable_required,
-            self.center_tolerance,
-        )
         self.backend = self._create_perception_backend()
+        self.observation_views = self._build_observation_views()
 
         self.executor = None
         if self.execute_grasp:
@@ -166,8 +181,12 @@ class LanguageGuidedGraspNode:
             self.executor.move_to_search_pose(self.search_pose_mode)
         else:
             rospy.logwarn(
-                "execute_grasp=false: robot action client is disabled and search pose will not be commanded"
+                "execute_grasp=false: robot action client is disabled and observation scanning will only use the current camera pose"
             )
+            if len(self.observation_views) > 1:
+                rospy.logwarn(
+                    "Multiple observation views are configured, but only the front/current view can be used without robot motion"
+                )
 
         self.target_sub = rospy.Subscriber(
             self.target_topic,
@@ -200,7 +219,6 @@ class LanguageGuidedGraspNode:
             STATE_DETECTING if self.current_target_text else STATE_WAITING_FOR_TARGET
         )
         self._set_state(initial_state, "startup")
-
         if self.current_target_text:
             rospy.loginfo(
                 "Language-guided grasp node started with default target: '%s'",
@@ -212,13 +230,20 @@ class LanguageGuidedGraspNode:
                 self.target_topic,
             )
         rospy.loginfo(
+            "Observation views enabled: %s",
+            ", ".join(view["name"] for view in self.observation_views),
+        )
+        rospy.loginfo(
             "Safe selection enabled: min_grasp_score=%.3f, execute_grasp=%s, annotated_image_topic=%s",
             self.min_grasp_score,
             self.execute_grasp,
             self.annotated_image_topic if self.publish_annotated_image else "disabled",
         )
         if self.save_raw_image:
-            rospy.loginfo("Raw camera snapshots will be saved to: %s", self.raw_image_path)
+            rospy.loginfo(
+                "Raw camera snapshots will be saved to: %s",
+                self.raw_image_path,
+            )
         if self.save_annotated_image:
             rospy.loginfo(
                 "Annotated detection snapshots will be saved to: %s",
@@ -229,6 +254,9 @@ class LanguageGuidedGraspNode:
             rospy.logwarn(
                 "Perception backend is not ready. Detection is disabled, but arm/camera/topic integration can still be tested."
             )
+
+        if self.current_target_text:
+            self._queue_target_processing(self.current_target_text)
 
     def _create_perception_backend(self):
         backend_config = BackendConfig(
@@ -259,18 +287,105 @@ class LanguageGuidedGraspNode:
         )
         return backend
 
+    def _build_observation_views(self):
+        mapper_cache = {}
+        front_vision_config = rospy.get_param("~vision_config")
+        views = {
+            "front": self._build_view_entry(
+                mapper_cache,
+                "front",
+                front_vision_config,
+                self.search_pose,
+                search_mode=self.search_pose_mode,
+            )
+        }
+
+        for side in ("left", "right"):
+            enabled = self._get_bool_param("~{}_view_enabled".format(side), False)
+            if not enabled:
+                continue
+            vision_config = rospy.get_param("~{}_view_vision_config".format(side), "")
+            if not vision_config:
+                rospy.logwarn(
+                    "%s_view_enabled=true but %s_view_vision_config is empty; disabling that view for safety",
+                    side,
+                    side,
+                )
+                continue
+            pose = {
+                "x": float(rospy.get_param("~{}_view_x".format(side), 0.20)),
+                "y": float(rospy.get_param("~{}_view_y".format(side), 0.00)),
+                "z": float(rospy.get_param("~{}_view_z".format(side), 0.15)),
+                "roll": float(rospy.get_param("~{}_view_roll".format(side), 0.0)),
+                "pitch": float(rospy.get_param("~{}_view_pitch".format(side), 1.57)),
+                "yaw": float(rospy.get_param("~{}_view_yaw".format(side), 0.0)),
+            }
+            views[side] = self._build_view_entry(
+                mapper_cache,
+                side,
+                vision_config,
+                pose,
+            )
+
+        ordered_views = []
+        requested_order = [
+            name.strip().lower()
+            for name in str(self.scan_view_order).split(",")
+            if name.strip()
+        ]
+        for name in requested_order:
+            if name in views and name not in (view["name"] for view in ordered_views):
+                ordered_views.append(views[name])
+        for name in ("front", "left", "right"):
+            if name in views and name not in (view["name"] for view in ordered_views):
+                ordered_views.append(views[name])
+        return ordered_views
+
+    def _build_view_entry(
+        self,
+        mapper_cache,
+        name,
+        vision_config_path,
+        pose,
+        search_mode="xyz_rpy",
+    ):
+        mapper = mapper_cache.get(vision_config_path)
+        if mapper is None:
+            mapper = VisionPlaneMapper(vision_config_path)
+            mapper_cache[vision_config_path] = mapper
+            rospy.loginfo(
+                "Loaded %s mapper from %s: %s",
+                name,
+                vision_config_path,
+                mapper.describe(),
+            )
+            if mapper.is_degenerate():
+                rospy.logwarn(
+                    "%s view mapping is degenerate: pixel center changes will not change grasp x/y",
+                    name,
+                )
+        return {
+            "name": name,
+            "pose": pose,
+            "mapper": mapper,
+            "vision_config": vision_config_path,
+            "search_mode": search_mode,
+        }
+
     def _target_callback(self, msg):
         new_target = self._normalize_target_text(msg.data)
         deferred = False
+        should_start = False
         with self.state_lock:
             if self.busy:
                 self.pending_target_text = new_target
                 deferred = True
             else:
                 self.current_target_text = new_target
-                self.stability_filter.reset()
                 if new_target:
-                    self._set_state(STATE_DETECTING, "new target received")
+                    self.busy = True
+                    should_start = True
+                    self._set_state(STATE_DETECTING, "new task received")
                 else:
                     self._set_state(STATE_WAITING_FOR_TARGET, "target cleared")
 
@@ -280,90 +395,351 @@ class LanguageGuidedGraspNode:
                 new_target,
             )
             return
-        if new_target:
+        if should_start:
             rospy.loginfo("Updated grasp target text: '%s'", new_target)
+            self._start_worker(new_target)
         else:
             rospy.loginfo("Cleared grasp target text")
 
-    def _image_callback(self, msg):
-        now = rospy.Time.now()
-        with self.state_lock:
-            if self.busy:
-                return
-            target_text = self.current_target_text
-            if not target_text:
-                if self.pipeline_state != STATE_WAITING_FOR_TARGET:
-                    self._set_state(STATE_WAITING_FOR_TARGET, "no target text")
-                return
-            if not self.backend_ready:
-                self._set_state(STATE_FAILED, "perception_backend_not_ready")
-                return
-            if self.pipeline_state in (STATE_WAITING_FOR_TARGET, STATE_DONE):
-                self._set_state(STATE_DETECTING, "running perception")
-            if self.min_detection_interval > 0.0:
-                elapsed = (now - self.last_detection_time).to_sec()
-                if elapsed < self.min_detection_interval:
-                    return
-                self.last_detection_time = now
+    def _start_worker(self, target_text):
+        worker = threading.Thread(
+            target=self._process_target_text,
+            args=(target_text,),
+            daemon=True,
+        )
+        worker.start()
 
+    def _queue_target_processing(self, target_text):
+        with self.state_lock:
+            if self.busy or not target_text:
+                return
+            self.busy = True
+            self._set_state(STATE_DETECTING, "processing default target")
+        self._start_worker(target_text)
+
+    def _image_callback(self, msg):
         try:
             cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         except CvBridgeError as exc:
-            rospy.logerr("CvBridge conversion failed: %s", exc)
+            rospy.logerr_throttle(5.0, "CvBridge conversion failed: %s", exc)
             return
+        with self.image_lock:
+            self.latest_image = cv_image
+            self.latest_header = msg.header
 
-        result = self._run_perception(cv_image, target_text)
-        decision = evaluate_target_selection(
-            result,
-            target_text,
-            self.min_grasp_score,
-            self.min_target_text_length,
-        )
-        self._publish_detection_observation(cv_image, result, target_text, decision, msg)
+    def _process_target_text(self, target_text):
+        task_success = False
+        dry_run_success = False
+        result_reason = "task failed"
+        task = parse_task_command(target_text)
 
-        if not decision.should_execute:
-            self._log_selection_decision(target_text, decision)
-            with self.state_lock:
-                if not self.busy and target_text == self.current_target_text:
-                    self.stability_filter.reset()
-                    self._set_state(STATE_FAILED, decision.status)
-            return
-
-        selected_box = decision.selected_box
-        start_grasp = False
-        stable_center = None
-        with self.state_lock:
-            if self.busy or target_text != self.current_target_text:
+        try:
+            if not self.backend_ready:
+                result_reason = "perception backend not ready"
+                self._set_state(STATE_FAILED, "perception_backend_not_ready")
                 return
 
-            if self.pipeline_state == STATE_FAILED:
-                self._set_state(STATE_DETECTING, "candidate found")
-            self.stability_filter.add(selected_box.center)
-            if self.stability_filter.is_stable():
-                stable_center = self.stability_filter.average_center()
-                self.stability_filter.reset()
-                self.busy = True
-                self._set_state(STATE_TARGET_LOCKED, "stable detection")
-                start_grasp = True
+            if len(task.pick_target_text) < self.min_target_text_length:
+                result_reason = "invalid pick target"
+                self._set_state(STATE_FAILED, "invalid_pick_target")
+                return
+            if (
+                task.place_target_text
+                and len(task.place_target_text) < self.min_target_text_length
+            ):
+                result_reason = "invalid place target"
+                self._set_state(STATE_FAILED, "invalid_place_target")
+                return
 
-        if start_grasp:
             rospy.loginfo(
-                "Stable target '%s' detected by %s at pixel center (%.1f, %.1f), score=%.3f, label='%s'",
-                target_text,
-                result.source_model,
-                stable_center[0],
-                stable_center[1],
-                selected_box.score,
-                selected_box.label,
+                "Processing task '%s' -> pick='%s'%s",
+                task.raw_text,
+                task.pick_target_text,
+                ", place='{}'".format(task.place_target_text)
+                if task.place_target_text
+                else "",
             )
-            worker = threading.Thread(
-                target=self._grasp_target,
-                args=(stable_center, target_text),
-                daemon=True,
-            )
-            worker.start()
 
-    def _publish_detection_observation(self, cv_image, result, target_text, decision, source_msg):
+            pick_observation = self._locate_target_across_views(
+                task.pick_target_text,
+                "pick",
+            )
+            if pick_observation is None:
+                result_reason = "pick target not found"
+                self._set_state(STATE_FAILED, "pick_target_not_found")
+                return
+
+            place_observation = None
+            if task.is_pick_and_place:
+                place_observation = self._locate_target_across_views(
+                    task.place_target_text,
+                    "place",
+                )
+                if place_observation is None:
+                    result_reason = "place target not found"
+                    self._set_state(STATE_FAILED, "place_target_not_found")
+                    return
+
+            task_success, dry_run_success, result_reason = self._execute_task(
+                task,
+                pick_observation,
+                place_observation,
+            )
+        finally:
+            self._finalize_task(
+                target_text,
+                task_success,
+                dry_run_success,
+                result_reason,
+            )
+
+    def _locate_target_across_views(self, target_text, stage_name):
+        for view in self.observation_views:
+            if not self._move_to_view(view):
+                continue
+            observation = self._locate_target_in_view(view, target_text, stage_name)
+            if observation is not None:
+                return observation
+        return None
+
+    def _move_to_view(self, view):
+        if self.executor is None:
+            if view["name"] != "front":
+                rospy.logwarn(
+                    "Skipping %s view because execute_grasp=false disables robot motion",
+                    view["name"],
+                )
+                return False
+            return True
+
+        label = "{} observation view".format(view["name"])
+        if view["name"] == "front":
+            moved = self.executor.move_to_search_pose(view["search_mode"])
+        else:
+            moved = self.executor.move_to_pose(view["pose"], label)
+        if moved and self.scan_settle_sec > 0.0:
+            rospy.sleep(self.scan_settle_sec)
+        return moved
+
+    def _locate_target_in_view(self, view, target_text, stage_name):
+        stability_filter = CenterStabilityFilter(
+            self.scan_stable_required,
+            self.center_tolerance,
+        )
+        for attempt in range(1, self.scan_attempts_per_view + 1):
+            self._set_state(
+                STATE_DETECTING,
+                "scanning {} target '{}' in {} view ({}/{})".format(
+                    stage_name,
+                    target_text,
+                    view["name"],
+                    attempt,
+                    self.scan_attempts_per_view,
+                ),
+            )
+            cv_image, header = self._get_latest_image(timeout_sec=5.0)
+            if cv_image is None:
+                rospy.logwarn(
+                    "No camera image available while scanning %s target '%s' in %s view",
+                    stage_name,
+                    target_text,
+                    view["name"],
+                )
+                return None
+
+            result = self._run_perception(cv_image, target_text)
+            decision = evaluate_target_selection(
+                result,
+                target_text,
+                self.min_grasp_score,
+                self.min_target_text_length,
+            )
+            self._publish_detection_observation(
+                cv_image,
+                result,
+                target_text,
+                decision,
+                header,
+            )
+
+            if not decision.should_execute:
+                stability_filter.reset()
+                self._log_selection_decision(
+                    target_text,
+                    decision,
+                    view_name=view["name"],
+                )
+            else:
+                selected_box = decision.selected_box
+                stability_filter.add(selected_box.center)
+                if stability_filter.is_stable():
+                    stable_center = stability_filter.average_center()
+                    arm_x, arm_y = view["mapper"].map_pixel_center(stable_center)
+                    rospy.loginfo(
+                        "Locked %s target '%s' in %s view at pixel center (%.1f, %.1f), mapped to x=%.4f, y=%.4f, score=%.3f, label='%s'",
+                        stage_name,
+                        target_text,
+                        view["name"],
+                        stable_center[0],
+                        stable_center[1],
+                        arm_x,
+                        arm_y,
+                        selected_box.score,
+                        selected_box.label,
+                    )
+                    self._set_state(
+                        STATE_TARGET_LOCKED,
+                        "{} target locked in {} view".format(
+                            stage_name,
+                            view["name"],
+                        ),
+                    )
+                    return TargetObservation(
+                        target_text=target_text,
+                        view_name=view["name"],
+                        center=stable_center,
+                        score=selected_box.score,
+                        label=selected_box.label,
+                        arm_x=arm_x,
+                        arm_y=arm_y,
+                    )
+
+            if self.scan_retry_interval > 0.0 and attempt < self.scan_attempts_per_view:
+                rospy.sleep(self.scan_retry_interval)
+        return None
+
+    def _execute_task(self, task: TaskCommand, pick_observation, place_observation):
+        self._set_state(
+            STATE_GRASPING,
+            "executing pick for '{}'".format(task.pick_target_text),
+        )
+        rospy.loginfo(
+            "Pick target '%s' selected from %s view: x=%.4f, y=%.4f, z=%.4f",
+            task.pick_target_text,
+            pick_observation.view_name,
+            pick_observation.arm_x,
+            pick_observation.arm_y,
+            self.pick_z,
+        )
+        if place_observation is not None:
+            rospy.loginfo(
+                "Place target '%s' selected from %s view: x=%.4f, y=%.4f, z=%.4f",
+                task.place_target_text,
+                place_observation.view_name,
+                place_observation.arm_x,
+                place_observation.arm_y,
+                self.dynamic_place_z,
+            )
+
+        if not self.execute_grasp:
+            rospy.logwarn(
+                "execute_grasp=false: dry run only, mapped task will not be sent to the robot"
+            )
+            return True, True, "dry-run task planned"
+
+        pick_success = self.executor.execute_pick(
+            pick_observation.arm_x,
+            pick_observation.arm_y,
+            orientation_mode=self.pick_orientation_mode,
+        )
+        if not pick_success:
+            rospy.logwarn("Grasp failed for target '%s'", task.pick_target_text)
+            return False, False, "grasp failed"
+
+        rospy.loginfo("Grasp succeeded for target '%s'", task.pick_target_text)
+        if place_observation is not None:
+            self._set_state(
+                STATE_PLACING,
+                "placing into '{}'".format(task.place_target_text),
+            )
+            place_success = self.executor.execute_drop_at(
+                place_observation.arm_x,
+                place_observation.arm_y,
+                self.dynamic_place_z,
+            )
+            if not place_success:
+                rospy.logwarn(
+                    "Dynamic place failed for target '%s'",
+                    task.place_target_text,
+                )
+                return False, False, "dynamic place failed"
+            rospy.loginfo(
+                "Dynamic place succeeded for target '%s'",
+                task.place_target_text,
+            )
+            return True, False, "pick and place succeeded"
+
+        if self.drop_after_grasp:
+            self._set_state(STATE_PLACING, "executing fixed drop")
+            if self.executor.execute_drop():
+                rospy.loginfo("Drop succeeded at fixed position")
+            else:
+                rospy.logwarn(
+                    "Drop failed after grasp success, target will still be cleared"
+                )
+        return True, False, "grasp succeeded"
+
+    def _finalize_task(self, target_text, task_success, dry_run_success, result_reason):
+        next_target = None
+        with self.state_lock:
+            if (
+                (task_success or dry_run_success)
+                and self.clear_target_after_success
+                and self.current_target_text == target_text
+            ):
+                self.current_target_text = ""
+            elif (
+                not task_success
+                and not dry_run_success
+                and self.clear_target_after_failure
+                and self.current_target_text == target_text
+            ):
+                self.current_target_text = ""
+
+            if self.pending_target_text is not None:
+                self.current_target_text = self.pending_target_text
+                next_target = self.pending_target_text
+                self.pending_target_text = None
+
+            self.busy = False
+
+        if self.execute_grasp and self.return_to_search_pose_after_grasp and self.executor:
+            self.executor.move_to_search_pose(self.search_pose_mode)
+
+        if dry_run_success:
+            self._set_state(STATE_DONE, result_reason)
+        elif task_success:
+            self._set_state(STATE_DONE, result_reason)
+        else:
+            self._set_state(STATE_FAILED, result_reason)
+
+        if next_target:
+            with self.state_lock:
+                self.busy = True
+            self._set_state(STATE_DETECTING, "processing deferred target")
+            self._start_worker(next_target)
+        elif not self.current_target_text:
+            self._set_state(STATE_WAITING_FOR_TARGET, "target complete")
+
+    def _get_latest_image(self, timeout_sec=5.0):
+        deadline = time.time() + timeout_sec
+        while not rospy.is_shutdown():
+            with self.image_lock:
+                if self.latest_image is not None:
+                    return self.latest_image.copy(), self.latest_header
+            if time.time() >= deadline:
+                return None, None
+            rospy.sleep(0.05)
+        return None, None
+
+    def _publish_detection_observation(
+        self,
+        cv_image,
+        result,
+        target_text,
+        decision,
+        source_header,
+    ):
         if (
             not self.publish_annotated_image
             and not self.save_annotated_image
@@ -383,7 +759,8 @@ class LanguageGuidedGraspNode:
         if self.annotated_image_pub is not None:
             try:
                 annotated_msg = self.bridge.cv2_to_imgmsg(annotated, encoding="bgr8")
-                annotated_msg.header = source_msg.header
+                if source_header is not None:
+                    annotated_msg.header = source_header
                 self.annotated_image_pub.publish(annotated_msg)
             except CvBridgeError as exc:
                 rospy.logwarn_throttle(
@@ -400,11 +777,11 @@ class LanguageGuidedGraspNode:
                     self.annotated_image_path,
                 )
 
-    def _log_selection_decision(self, target_text, decision):
-        rospy.loginfo_throttle(
-            3.0,
-            "Target '%s' not selected for grasp: status=%s, candidates=%d, reason=%s",
+    def _log_selection_decision(self, target_text, decision, view_name="front"):
+        rospy.loginfo(
+            "Target '%s' not selected in %s view: status=%s, candidates=%d, reason=%s",
             target_text,
+            view_name,
             decision.status,
             decision.candidate_count,
             decision.reason,
@@ -422,86 +799,8 @@ class LanguageGuidedGraspNode:
             )
             return None
 
-    def _grasp_target(self, center, target_text):
-        grasp_success = False
-        dry_run_success = False
-        self._set_state(
-            STATE_GRASPING,
-            "dry-run mapping only" if not self.execute_grasp else "executing pick",
-        )
-        try:
-            grasp_x, grasp_y = self.mapper.map_pixel_center(center)
-            rospy.loginfo(
-                "Target '%s' mapped to arm plane x=%.4f, y=%.4f, z=%.4f",
-                target_text,
-                grasp_x,
-                grasp_y,
-                self.pick_z,
-            )
-
-            if not self.execute_grasp:
-                dry_run_success = True
-                rospy.logwarn(
-                    "execute_grasp=false: dry run only, mapped target will not be sent to the robot"
-                )
-                return
-
-            grasp_success = self.executor.execute_pick(
-                grasp_x,
-                grasp_y,
-                orientation_mode=self.pick_orientation_mode,
-            )
-            if grasp_success:
-                rospy.loginfo("Grasp succeeded for target '%s'", target_text)
-                if self.drop_after_grasp:
-                    self._set_state(STATE_PLACING, "executing fixed drop")
-                    if self.executor.execute_drop():
-                        rospy.loginfo("Drop succeeded at fixed position")
-                    else:
-                        rospy.logwarn(
-                            "Drop failed after grasp success, target will still be cleared"
-                        )
-            else:
-                rospy.logwarn("Grasp failed for target '%s'", target_text)
-        finally:
-            if self.execute_grasp and self.return_to_search_pose_after_grasp:
-                self.executor.move_to_search_pose(self.search_pose_mode)
-            with self.state_lock:
-                if (
-                    (grasp_success or dry_run_success)
-                    and self.clear_target_after_success
-                    and self.current_target_text == target_text
-                ):
-                    self.current_target_text = ""
-                elif (
-                    not grasp_success
-                    and not dry_run_success
-                    and self.clear_target_after_failure
-                    and self.current_target_text == target_text
-                ):
-                    self.current_target_text = ""
-                if self.pending_target_text is not None:
-                    self.current_target_text = self.pending_target_text
-                    self.pending_target_text = None
-                self.stability_filter.reset()
-                self.busy = False
-                if dry_run_success:
-                    self._set_state(STATE_DONE, "dry-run target locked")
-                elif grasp_success:
-                    self._set_state(STATE_DONE, "grasp succeeded")
-                else:
-                    self._set_state(STATE_FAILED, "grasp failed")
-
-                if self.current_target_text:
-                    self._set_state(STATE_DETECTING, "ready for target")
-                else:
-                    self._set_state(STATE_WAITING_FOR_TARGET, "target complete")
-
     def _set_state(self, state, reason=""):
-        if (
-            self.pipeline_state == state
-            and self.pipeline_state_reason == reason
-        ):
+        if self.pipeline_state == state and self.pipeline_state_reason == reason:
             return
         self.pipeline_state = state
         self.pipeline_state_reason = reason
