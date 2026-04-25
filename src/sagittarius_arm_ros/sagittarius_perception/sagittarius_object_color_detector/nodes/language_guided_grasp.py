@@ -347,20 +347,20 @@ class LanguageGuidedGraspNode:
 
         side_defaults = {
             "left": {
-                "x": 0.20,
-                "y": 0.08,
-                "z": 0.20,
+                "x": 0.23,
+                "y": 0.10,
+                "z": 0.23,
                 "roll": 0.0,
                 "pitch": 1.57,
-                "yaw": 1.57,
+                "yaw": 1.10,
             },
             "right": {
-                "x": 0.20,
-                "y": -0.08,
-                "z": 0.20,
+                "x": 0.23,
+                "y": -0.10,
+                "z": 0.23,
                 "roll": 0.0,
                 "pitch": 1.57,
-                "yaw": -1.57,
+                "yaw": -1.10,
             },
         }
         for side in ("left", "right"):

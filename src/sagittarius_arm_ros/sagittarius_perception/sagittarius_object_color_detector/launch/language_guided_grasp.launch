@@ -91,20 +91,20 @@
   <arg name="scan_settle_sec" default="0.8"/>
   <arg name="left_view_enabled" default="false"/>
   <arg name="left_view_vision_config" default=""/>
-  <arg name="left_view_x" default="0.20"/>
-  <arg name="left_view_y" default="0.08"/>
-  <arg name="left_view_z" default="0.20"/>
+  <arg name="left_view_x" default="0.23"/>
+  <arg name="left_view_y" default="0.10"/>
+  <arg name="left_view_z" default="0.23"/>
   <arg name="left_view_roll" default="0.0"/>
   <arg name="left_view_pitch" default="1.57"/>
-  <arg name="left_view_yaw" default="1.57"/>
+  <arg name="left_view_yaw" default="1.10"/>
   <arg name="right_view_enabled" default="false"/>
   <arg name="right_view_vision_config" default=""/>
-  <arg name="right_view_x" default="0.20"/>
-  <arg name="right_view_y" default="-0.08"/>
-  <arg name="right_view_z" default="0.20"/>
+  <arg name="right_view_x" default="0.23"/>
+  <arg name="right_view_y" default="-0.10"/>
+  <arg name="right_view_z" default="0.23"/>
   <arg name="right_view_roll" default="0.0"/>
   <arg name="right_view_pitch" default="1.57"/>
-  <arg name="right_view_yaw" default="-1.57"/>
+  <arg name="right_view_yaw" default="-1.10"/>
   <node pkg="sagittarius_object_color_detector" type="language_guided_grasp.py" name="$(arg node_name)" output="screen">
     <param name ="vision_config" value = "$(arg vision_config)"/>
     <param name ="arm_name" value = "$(arg robot_name)"/>
