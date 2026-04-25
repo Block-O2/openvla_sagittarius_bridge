@@ -76,6 +76,9 @@ class GroundingDinoBackend(BasePerceptionBackend):
     def _load_model(self):
         args = self.slconfig.fromfile(self.config.model_config)
         args.device = self.device
+        args.text_encoder_type = self._resolve_local_text_encoder_type(
+            getattr(args, "text_encoder_type", "")
+        )
         model = self.build_model(args)
         checkpoint = self.torch.load(self.config.model_weights, map_location="cpu")
         model.load_state_dict(
@@ -83,6 +86,29 @@ class GroundingDinoBackend(BasePerceptionBackend):
             strict=False,
         )
         self.model = model.eval().to(self.device)
+
+    def _resolve_local_text_encoder_type(self, text_encoder_type):
+        normalized = (text_encoder_type or "").strip()
+        if not normalized:
+            return normalized
+        if os.path.isdir(normalized):
+            return normalized
+
+        if normalized == "bert-base-uncased":
+            repo_cache = os.path.expanduser(
+                "~/.cache/huggingface/hub/models--bert-base-uncased"
+            )
+            refs_main = os.path.join(repo_cache, "refs", "main")
+            if os.path.isfile(refs_main):
+                with open(refs_main, "r", encoding="utf-8") as handle:
+                    revision = handle.read().strip()
+                snapshot_dir = os.path.join(repo_cache, "snapshots", revision)
+                tokenizer_config = os.path.join(snapshot_dir, "tokenizer_config.json")
+                vocab_file = os.path.join(snapshot_dir, "vocab.txt")
+                if os.path.isfile(tokenizer_config) and os.path.isfile(vocab_file):
+                    return snapshot_dir
+
+        return normalized
 
     def infer(self, image_bgr, text_prompt: str) -> DetectionResult:
         image_height, image_width = image_bgr.shape[:2]
@@ -153,4 +179,3 @@ class GroundingDinoBackend(BasePerceptionBackend):
         x2 = min(float(image_width), (cx + width / 2.0) * image_width)
         y2 = min(float(image_height), (cy + height / 2.0) * image_height)
         return x1, y1, x2, y2
-
