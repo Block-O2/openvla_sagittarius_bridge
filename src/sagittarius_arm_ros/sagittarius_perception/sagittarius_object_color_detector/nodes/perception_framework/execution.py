@@ -94,6 +94,62 @@ class SagittariusGraspExecutor:
         rospy.loginfo("Moved to %s", label)
         return True
 
+    def move_to_pose_via_intermediate(
+        self,
+        pose,
+        intermediate_pose,
+        label="observation pose",
+        allow_direct_fallback=True,
+    ):
+        if intermediate_pose:
+            moved = self.move_to_pose(
+                intermediate_pose,
+                "{} intermediate pose".format(label),
+            )
+            if not moved:
+                if not allow_direct_fallback:
+                    return False
+                rospy.logwarn(
+                    "Failed to move to %s intermediate pose; trying direct %s because allow_direct_fallback=true",
+                    label,
+                    label,
+                )
+        return self.move_to_pose(pose, label)
+
+    def move_to_pose_with_retries(
+        self,
+        pose,
+        label="observation pose",
+        retries=1,
+        retry_interval=0.2,
+        intermediate_pose=None,
+        allow_direct_fallback=True,
+    ):
+        attempts = max(1, int(retries))
+        for attempt in range(1, attempts + 1):
+            if intermediate_pose is not None:
+                moved = self.move_to_pose_via_intermediate(
+                    pose,
+                    intermediate_pose,
+                    label=label,
+                    allow_direct_fallback=allow_direct_fallback,
+                )
+            else:
+                moved = self.move_to_pose(pose, label)
+            if moved:
+                return True
+            if attempt < attempts:
+                rospy.logwarn(
+                    "Retrying move to %s (%d/%d) after %.2fs",
+                    label,
+                    attempt + 1,
+                    attempts,
+                    retry_interval,
+                )
+                if retry_interval > 0.0:
+                    rospy.sleep(retry_interval)
+        return False
+
     def execute_pick(self, grasp_x, grasp_y, orientation_mode="auto"):
         goal = SGRCtrlGoal()
         goal.grasp_type = goal.GRASP_OPEN

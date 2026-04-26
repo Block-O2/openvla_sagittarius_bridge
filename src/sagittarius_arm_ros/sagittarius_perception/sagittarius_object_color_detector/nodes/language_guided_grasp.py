@@ -68,7 +68,7 @@ class LanguageGuidedGraspNode:
         )
         self.stable_required = max(1, int(rospy.get_param("~stable_required", 5)))
         self.center_tolerance = float(rospy.get_param("~center_tolerance", 8.0))
-        self.pick_z = float(rospy.get_param("~pick_z", 0.01))
+        self.pick_z = float(rospy.get_param("~pick_z", 0.015))
         self.allow_start_without_backend = self._get_bool_param(
             "~allow_start_without_groundingdino", False
         )
@@ -89,10 +89,51 @@ class LanguageGuidedGraspNode:
             "pitch": float(rospy.get_param("~search_pose_pitch", 1.57)),
             "yaw": float(rospy.get_param("~search_pose_yaw", 0.0)),
         }
+        self.pick_view_via_intermediate = self._get_bool_param(
+            "~pick_view_via_intermediate",
+            False,
+        )
+        self.pick_view_allow_direct_fallback = self._get_bool_param(
+            "~pick_view_allow_direct_fallback",
+            True,
+        )
+        self.pick_view_recover_via_stay = self._get_bool_param(
+            "~pick_view_recover_via_stay",
+            True,
+        )
+        self.pick_view_recover_pause_sec = max(
+            0.0,
+            float(rospy.get_param("~pick_view_recover_pause_sec", 0.4)),
+        )
+        self.pick_view_move_retries = max(
+            1,
+            int(rospy.get_param("~pick_view_move_retries", 2)),
+        )
+        self.pick_view_retry_interval = max(
+            0.0,
+            float(rospy.get_param("~pick_view_retry_interval", 0.2)),
+        )
+        self.pick_intermediate_pose = {
+            "x": float(rospy.get_param("~pick_intermediate_x", self.search_pose["x"])),
+            "y": float(rospy.get_param("~pick_intermediate_y", 0.0)),
+            "z": float(
+                rospy.get_param(
+                    "~pick_intermediate_z",
+                    max(self.search_pose["z"], 0.30),
+                )
+            ),
+            "roll": float(
+                rospy.get_param("~pick_intermediate_roll", self.search_pose["roll"])
+            ),
+            "pitch": float(
+                rospy.get_param("~pick_intermediate_pitch", self.search_pose["pitch"])
+            ),
+            "yaw": float(rospy.get_param("~pick_intermediate_yaw", 0.0)),
+        }
         self.return_to_search_pose_after_grasp = self._get_bool_param(
             "~return_to_search_pose_after_grasp", False
         )
-        self.pick_orientation_mode = rospy.get_param("~pick_orientation_mode", "auto")
+        self.pick_orientation_mode = rospy.get_param("~pick_orientation_mode", "fixed")
         self.drop_position = (
             float(rospy.get_param("~drop_x", 0.15)),
             float(rospy.get_param("~drop_y", 0.24)),
@@ -100,6 +141,9 @@ class LanguageGuidedGraspNode:
         )
         self.dynamic_place_z = float(
             rospy.get_param("~dynamic_place_z", self.drop_position[2])
+        )
+        self.relative_place_offset_y = float(
+            rospy.get_param("~relative_place_offset_y", 0.05)
         )
         self.rejection_motion_enabled = self._get_bool_param(
             "~rejection_motion_enabled", True
@@ -176,6 +220,7 @@ class LanguageGuidedGraspNode:
         self.current_target_text = self._normalize_target_text(
             self.default_target_text
         )
+        self.last_view_failure_reason = ""
         self.pending_target_text = None
         self.busy = False
         self.backend_ready = False
@@ -531,16 +576,27 @@ class LanguageGuidedGraspNode:
                     result_reason = "invalid place target"
                     self._set_state(STATE_FAILED, "invalid_place_target")
                     return
+                if (
+                    step.place_reference_text
+                    and len(step.place_reference_text) < self.min_target_text_length
+                ):
+                    result_reason = "invalid place reference"
+                    self._set_state(STATE_FAILED, "invalid_place_reference")
+                    return
 
                 pick_observation = self._locate_pick_target(
                     step.pick_target_text,
                     "pick step {}".format(step_index),
                 )
                 if pick_observation is None:
-                    result_reason = "pick target '{}' not found".format(
-                        step.pick_target_text
-                    )
-                    self._set_state(STATE_FAILED, "pick_target_not_found")
+                    if self.last_view_failure_reason == "pick_view_move_failed":
+                        result_reason = "failed to move to pick view"
+                        self._set_state(STATE_FAILED, "pick_view_move_failed")
+                    else:
+                        result_reason = "pick target '{}' not found".format(
+                            step.pick_target_text
+                        )
+                        self._set_state(STATE_FAILED, "pick_target_not_found")
                     self._reject_current_request(result_reason)
                     return
 
@@ -566,7 +622,9 @@ class LanguageGuidedGraspNode:
             )
 
     def _locate_pick_target(self, target_text, stage_name):
+        self.last_view_failure_reason = ""
         if not self._move_to_pick_view():
+            self.last_view_failure_reason = "pick_view_move_failed"
             return None
         return self._locate_target_in_view(self.pick_view, target_text, stage_name)
 
@@ -582,7 +640,52 @@ class LanguageGuidedGraspNode:
     def _move_to_pick_view(self):
         if self.executor is None:
             return True
-        moved = self.executor.move_to_search_pose(self.pick_view["search_mode"])
+        search_mode = self.pick_view["search_mode"].strip().lower()
+        if search_mode in ("camera_down", "table_view", "down", "xyz_rpy", "search", "legacy"):
+            intermediate_pose = (
+                self.pick_intermediate_pose if self.pick_view_via_intermediate else None
+            )
+            moved = self.executor.move_to_pose_with_retries(
+                self.pick_view["pose"],
+                label="camera/table search pose",
+                retries=self.pick_view_move_retries,
+                retry_interval=self.pick_view_retry_interval,
+                intermediate_pose=intermediate_pose,
+                allow_direct_fallback=self.pick_view_allow_direct_fallback,
+            )
+        else:
+            attempts = max(1, self.pick_view_move_retries)
+            moved = False
+            for attempt in range(1, attempts + 1):
+                moved = self.executor.move_to_search_pose(self.pick_view["search_mode"])
+                if moved:
+                    break
+                if attempt < attempts:
+                    rospy.logwarn(
+                        "Retrying move to search pose mode '%s' (%d/%d) after %.2fs",
+                        self.pick_view["search_mode"],
+                        attempt + 1,
+                        attempts,
+                        self.pick_view_retry_interval,
+                    )
+                    if self.pick_view_retry_interval > 0.0:
+                        rospy.sleep(self.pick_view_retry_interval)
+        if not moved and self.pick_view_recover_via_stay:
+            rospy.logwarn(
+                "Direct move to pick view failed; attempting recovery via DEFINE_STAY before retrying camera/table search pose"
+            )
+            recovered = self.executor.move_to_search_pose("define_stay")
+            if recovered and self.pick_view_recover_pause_sec > 0.0:
+                rospy.sleep(self.pick_view_recover_pause_sec)
+            if recovered:
+                moved = self.executor.move_to_pose_with_retries(
+                    self.pick_view["pose"],
+                    label="camera/table search pose",
+                    retries=max(1, self.pick_view_move_retries),
+                    retry_interval=self.pick_view_retry_interval,
+                    intermediate_pose=None,
+                    allow_direct_fallback=self.pick_view_allow_direct_fallback,
+                )
         if moved and self.scan_settle_sec > 0.0:
             rospy.sleep(self.scan_settle_sec)
         return moved
@@ -726,49 +829,92 @@ class LanguageGuidedGraspNode:
             return False, False, "grasp failed"
 
         rospy.loginfo("Grasp succeeded for target '%s'", step.pick_target_text)
-        if step.place_target_text:
-            place_observation = self._locate_target_across_views(
-                step.place_target_text,
-                "place step {}".format(step_index),
-            )
-            if place_observation is None:
-                result_reason = "place target '{}' not found".format(
-                    step.place_target_text
+        if step.place_target_text or step.place_reference_text:
+            if step.place_relation and step.place_reference_text:
+                place_observation = self._locate_target_across_views(
+                    step.place_reference_text,
+                    "place step {}".format(step_index),
                 )
-                self._set_state(STATE_FAILED, "place_target_not_found")
-                self._reject_current_request(result_reason)
-                return False, False, result_reason
-
-            rospy.loginfo(
-                "Place target '%s' selected from %s view: x=%.4f, y=%.4f, z=%.4f",
-                step.place_target_text,
-                place_observation.view_name,
-                place_observation.arm_x,
-                place_observation.arm_y,
-                self.dynamic_place_z,
-            )
-            self._set_state(
-                STATE_PLACING,
-                "placing step {}/{} into '{}'".format(
-                    step_index,
-                    total_steps,
+                if place_observation is None:
+                    result_reason = "place reference '{}' not found".format(
+                        step.place_reference_text
+                    )
+                    self._set_state(STATE_FAILED, "place_reference_not_found")
+                    self._reject_current_request(result_reason)
+                    return False, False, result_reason
+                drop_x, drop_y = self._compute_relative_place_xy(
+                    place_observation,
+                    step.place_relation,
+                )
+                place_summary = "{} '{}'".format(
+                    step.place_relation,
+                    step.place_reference_text,
+                )
+                rospy.loginfo(
+                    "Relative place target '%s' selected from %s view: reference x=%.4f, y=%.4f, drop x=%.4f, y=%.4f, z=%.4f",
+                    place_summary,
+                    place_observation.view_name,
+                    place_observation.arm_x,
+                    place_observation.arm_y,
+                    drop_x,
+                    drop_y,
+                    self.dynamic_place_z,
+                )
+                self._set_state(
+                    STATE_PLACING,
+                    "placing step {}/{} {} '{}'".format(
+                        step_index,
+                        total_steps,
+                        "left of" if step.place_relation == "left_of" else "right of",
+                        step.place_reference_text,
+                    ),
+                )
+            else:
+                place_observation = self._locate_target_across_views(
                     step.place_target_text,
-                ),
-            )
+                    "place step {}".format(step_index),
+                )
+                if place_observation is None:
+                    result_reason = "place target '{}' not found".format(
+                        step.place_target_text
+                    )
+                    self._set_state(STATE_FAILED, "place_target_not_found")
+                    self._reject_current_request(result_reason)
+                    return False, False, result_reason
+
+                drop_x = place_observation.arm_x
+                drop_y = place_observation.arm_y
+                place_summary = step.place_target_text
+                rospy.loginfo(
+                    "Place target '%s' selected from %s view: x=%.4f, y=%.4f, z=%.4f",
+                    step.place_target_text,
+                    place_observation.view_name,
+                    place_observation.arm_x,
+                    place_observation.arm_y,
+                    self.dynamic_place_z,
+                )
+                self._set_state(
+                    STATE_PLACING,
+                    "placing step {}/{} into '{}'".format(
+                        step_index,
+                        total_steps,
+                        step.place_target_text,
+                    ),
+                )
             place_success = self.executor.execute_drop_at(
-                place_observation.arm_x,
-                place_observation.arm_y,
+                drop_x,
+                drop_y,
                 self.dynamic_place_z,
             )
             if not place_success:
                 rospy.logwarn(
                     "Dynamic place failed for target '%s'",
-                    step.place_target_text,
+                    place_summary,
                 )
                 return False, False, "dynamic place failed"
             rospy.loginfo(
                 "Dynamic place succeeded for target '%s'",
-                step.place_target_text,
+                place_summary,
             )
             return True, False, "step {}/{} pick and place succeeded".format(
                 step_index,
@@ -792,30 +938,54 @@ class LanguageGuidedGraspNode:
         rospy.logwarn(
             "execute_grasp=false: dry run only, mapped task will not be sent to the robot"
         )
-        if not step.place_target_text:
+        if not step.place_target_text and not step.place_reference_text:
             return True, True, "dry-run pick planned"
 
+        place_query = step.place_reference_text or step.place_target_text
         place_observation = self._locate_target_across_views(
-            step.place_target_text,
+            place_query,
             "place step {}".format(step_index),
         )
         if place_observation is None:
-            result_reason = "place target '{}' not found".format(
-                step.place_target_text
-            )
+            result_reason = "place target '{}' not found".format(place_query)
             self._set_state(STATE_FAILED, "place_target_not_found")
             self._reject_current_request(result_reason)
             return False, False, result_reason
 
-        rospy.loginfo(
-            "Dry-run place target '%s' selected from %s view: x=%.4f, y=%.4f, z=%.4f",
-            step.place_target_text,
-            place_observation.view_name,
-            place_observation.arm_x,
-            place_observation.arm_y,
-            self.dynamic_place_z,
-        )
+        if step.place_relation and step.place_reference_text:
+            drop_x, drop_y = self._compute_relative_place_xy(
+                place_observation,
+                step.place_relation,
+            )
+            rospy.loginfo(
+                "Dry-run relative place '%s' from %s view: reference x=%.4f, y=%.4f, drop x=%.4f, y=%.4f, z=%.4f",
+                step.place_relation,
+                place_observation.view_name,
+                place_observation.arm_x,
+                place_observation.arm_y,
+                drop_x,
+                drop_y,
+                self.dynamic_place_z,
+            )
+        else:
+            rospy.loginfo(
+                "Dry-run place target '%s' selected from %s view: x=%.4f, y=%.4f, z=%.4f",
+                step.place_target_text,
+                place_observation.view_name,
+                place_observation.arm_x,
+                place_observation.arm_y,
+                self.dynamic_place_z,
+            )
         return True, True, "dry-run task planned"
+
+    def _compute_relative_place_xy(self, reference_observation, relation):
+        drop_x = reference_observation.arm_x
+        drop_y = reference_observation.arm_y
+        if relation == "left_of":
+            drop_y += self.relative_place_offset_y
+        elif relation == "right_of":
+            drop_y -= self.relative_place_offset_y
+        return drop_x, drop_y
 
     def _reject_current_request(self, reason_text):
         rospy.logwarn("Rejecting current request: %s", reason_text)
@@ -994,6 +1164,15 @@ class LanguageGuidedGraspNode:
                         index,
                         step.pick_target_text,
                         step.place_target_text,
+                    )
+                )
+            elif step.place_relation and step.place_reference_text:
+                parts.append(
+                    "{}: '{}' {} '{}'".format(
+                        index,
+                        step.pick_target_text,
+                        "left of" if step.place_relation == "left_of" else "right of",
+                        step.place_reference_text,
                     )
                 )
             else:

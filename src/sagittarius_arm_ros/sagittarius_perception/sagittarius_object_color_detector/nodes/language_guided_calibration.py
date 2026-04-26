@@ -94,7 +94,7 @@ class LanguageGuidedCalibration:
         self.observe_yaw = float(rospy.get_param("~observe_yaw", 0.0))
         self.move_observation_via_intermediate = self._get_bool_param(
             "~move_observation_via_intermediate",
-            True,
+            False,
         )
         self.allow_direct_observation_fallback = self._get_bool_param(
             "~allow_direct_observation_fallback",

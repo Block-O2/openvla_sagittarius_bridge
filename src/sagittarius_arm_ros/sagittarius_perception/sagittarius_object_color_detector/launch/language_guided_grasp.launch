@@ -3,7 +3,7 @@
   <arg name="robot_name" default="sgr532"/>
   <arg name="robot_model" default="$(arg robot_name)"/>
   <arg name="node_name" default="language_guided_grasp_node"/>
-  <arg name="sgr_ctrl_init_pose" default="true"/>
+  <arg name="sgr_ctrl_init_pose" default="false"/>
   <include file="$(find sagittarius_moveit)/launch/demo_true.launch" />
   <node pkg="sagittarius_object_color_detector" type="sgr_ctrl.py" name="sgr_ctrl_node" output="screen" ns="$(arg robot_name)">
     <param name="init_pose" value="$(arg sgr_ctrl_init_pose)"/>
@@ -45,7 +45,7 @@
   <arg name="min_target_text_length" default="2"/>
   <arg name="stable_required" default="5"/>
   <arg name="center_tolerance" default="8.0"/>
-  <arg name="pick_z" default="0.01"/>
+  <arg name="pick_z" default="0.015"/>
   <arg name="publish_annotated_image" default="true"/>
   <arg name="annotated_image_topic" default="/language_guided_grasp/annotated_image"/>
   <arg name="state_topic" default="/language_guided_grasp/state"/>
@@ -60,12 +60,24 @@
   <arg name="search_pose_mode" default="xyz_rpy"/>
   <arg name="search_pose_x" default="0.20"/>
   <arg name="search_pose_y" default="0.00"/>
-  <arg name="search_pose_z" default="0.20"/>
+  <arg name="search_pose_z" default="0.22"/>
   <arg name="search_pose_roll" default="0.0"/>
   <arg name="search_pose_pitch" default="1.57"/>
   <arg name="search_pose_yaw" default="0.0"/>
+  <arg name="pick_view_via_intermediate" default="false"/>
+  <arg name="pick_view_allow_direct_fallback" default="true"/>
+  <arg name="pick_view_recover_via_stay" default="true"/>
+  <arg name="pick_view_recover_pause_sec" default="0.4"/>
+  <arg name="pick_view_move_retries" default="2"/>
+  <arg name="pick_view_retry_interval" default="0.2"/>
+  <arg name="pick_intermediate_x" default="$(arg search_pose_x)"/>
+  <arg name="pick_intermediate_y" default="0.0"/>
+  <arg name="pick_intermediate_z" default="0.30"/>
+  <arg name="pick_intermediate_roll" default="$(arg search_pose_roll)"/>
+  <arg name="pick_intermediate_pitch" default="$(arg search_pose_pitch)"/>
+  <arg name="pick_intermediate_yaw" default="0.0"/>
   <arg name="return_to_search_pose_after_grasp" default="false"/>
-  <arg name="pick_orientation_mode" default="auto"/>
+  <arg name="pick_orientation_mode" default="fixed"/>
   <arg name="drop_after_grasp" default="true"/>
   <arg name="clear_target_after_success" default="true"/>
   <arg name="clear_target_after_failure" default="true"/>
@@ -73,7 +85,8 @@
   <arg name="drop_y" default="0.24"/>
   <arg name="drop_z" default="0.20"/>
   <arg name="dynamic_place_z" default="$(arg drop_z)"/>
-  <arg name="rejection_motion_enabled" default="true"/>
+  <arg name="relative_place_offset_y" default="0.05"/>
+  <arg name="rejection_motion_enabled" default="false"/>
   <arg name="rejection_yaw_delta" default="0.30"/>
   <arg name="rejection_cycles" default="1"/>
   <arg name="rejection_pause_sec" default="0.15"/>
@@ -81,7 +94,7 @@
   <arg name="place_front_view_vision_config" default="$(arg vision_config)"/>
   <arg name="place_front_view_x" default="0.20"/>
   <arg name="place_front_view_y" default="0.00"/>
-  <arg name="place_front_view_z" default="0.20"/>
+  <arg name="place_front_view_z" default="0.22"/>
   <arg name="place_front_view_roll" default="0.0"/>
   <arg name="place_front_view_pitch" default="1.57"/>
   <arg name="place_front_view_yaw" default="0.0"/>
@@ -146,6 +159,18 @@
     <param name ="search_pose_roll" value = "$(arg search_pose_roll)"/>
     <param name ="search_pose_pitch" value = "$(arg search_pose_pitch)"/>
     <param name ="search_pose_yaw" value = "$(arg search_pose_yaw)"/>
+    <param name ="pick_view_via_intermediate" value = "$(arg pick_view_via_intermediate)"/>
+    <param name ="pick_view_allow_direct_fallback" value = "$(arg pick_view_allow_direct_fallback)"/>
+    <param name ="pick_view_recover_via_stay" value = "$(arg pick_view_recover_via_stay)"/>
+    <param name ="pick_view_recover_pause_sec" value = "$(arg pick_view_recover_pause_sec)"/>
+    <param name ="pick_view_move_retries" value = "$(arg pick_view_move_retries)"/>
+    <param name ="pick_view_retry_interval" value = "$(arg pick_view_retry_interval)"/>
+    <param name ="pick_intermediate_x" value = "$(arg pick_intermediate_x)"/>
+    <param name ="pick_intermediate_y" value = "$(arg pick_intermediate_y)"/>
+    <param name ="pick_intermediate_z" value = "$(arg pick_intermediate_z)"/>
+    <param name ="pick_intermediate_roll" value = "$(arg pick_intermediate_roll)"/>
+    <param name ="pick_intermediate_pitch" value = "$(arg pick_intermediate_pitch)"/>
+    <param name ="pick_intermediate_yaw" value = "$(arg pick_intermediate_yaw)"/>
     <param name ="return_to_search_pose_after_grasp" value = "$(arg return_to_search_pose_after_grasp)"/>
     <param name ="pick_orientation_mode" value = "$(arg pick_orientation_mode)"/>
     <param name ="drop_after_grasp" value = "$(arg drop_after_grasp)"/>
@@ -155,6 +180,7 @@
     <param name ="drop_y" value = "$(arg drop_y)"/>
     <param name ="drop_z" value = "$(arg drop_z)"/>
     <param name ="dynamic_place_z" value = "$(arg dynamic_place_z)"/>
+    <param name ="relative_place_offset_y" value = "$(arg relative_place_offset_y)"/>
     <param name ="rejection_motion_enabled" value = "$(arg rejection_motion_enabled)"/>
     <param name ="rejection_yaw_delta" value = "$(arg rejection_yaw_delta)"/>
     <param name ="rejection_cycles" value = "$(arg rejection_cycles)"/>
