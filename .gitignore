@@ -50,3 +50,7 @@ qtcreator-*
 
 # Catkin custom files
 CATKIN_IGNORE
+
+# Local calibration backups / transient device artifacts
+src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/config/*.bak_*
+ttyACM0
