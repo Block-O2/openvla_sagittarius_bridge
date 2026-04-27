@@ -531,111 +531,211 @@ green block -> green bucket
 
 ## 8. 推荐启动方式
 
-### 8.1 环境准备
+当前项目推荐使用仓库中提供的单机 GPU 启动脚本，而不是手动输入一大串 `roslaunch` 参数。
 
-进入工作空间：
-
-```bash
-cd ~/sagittarius_ws
-```
-
-加载 ROS 环境：
+推荐脚本：
 
 ```bash
-source /opt/ros/noetic/setup.bash
-source devel/setup.bash
+src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_single_machine_gpu_grasp.sh
 ```
 
-如果使用 GroundingDINO 虚拟环境：
+这个脚本会自动完成：
 
-```bash
-source /mnt/d/ai_models/groundingdino-venv/bin/activate
-export PYTHONPATH=/mnt/d/ai_models/GroundingDINO:$PYTHONPATH
-export MPLCONFIGDIR=/tmp/matplotlib-cfg
-mkdir -p "$MPLCONFIGDIR"
-```
+- 进入 `~/sagittarius_ws`
+- 激活 GroundingDINO Python 环境
+- source ROS Noetic 环境
+- source 当前 catkin 工作空间
+- 设置 GroundingDINO 的 `PYTHONPATH`
+- 使用 CUDA 运行 GroundingDINO
+- 加载 `vision_config_pick_front.yaml`
+- 加载 `vision_config_place_front.yaml`
+- 启动 `language_guided_grasp.launch`
+- 保存原始图和标注图到 `/tmp`
 
-### 8.2 检查机械臂串口
+---
 
-先运行：
+### 8.1 安全检测模式：不让机械臂动作
 
-```bash
-bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/ensure_sagittarius_serial.sh
-```
+默认情况下，脚本不会真实执行抓取，只会启动相机、检测模型、中心点精修和坐标映射。
 
-正常情况下应该看到：
-
-```text
-/dev/ttyACM0
-/dev/sagittarius -> /dev/ttyACM0
-```
-
-如果在 WSL2 中使用机械臂，需要先在 Windows PowerShell 中通过 `usbipd` attach 机械臂 USB 设备。
-
-### 8.3 推荐单机 GPU 测试脚本
-
-当前推荐入口：
+运行：
 
 ```bash
 bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_single_machine_gpu_grasp.sh
 ```
 
-该脚本适合单机模式：
-
-```text
-同一台电脑连接机械臂 + 相机 + 运行 GroundingDINO
-```
-
-第一次运行建议保持：
-
-```text
-EXECUTE_GRASP=false
-```
-
-确认检测、中心点和坐标映射都合理后，再改为：
-
-```text
-EXECUTE_GRASP=true
-```
-
-### 8.4 直接 roslaunch 示例
-
-可以直接启动主 launch：
+这等价于：
 
 ```bash
-roslaunch sagittarius_object_color_detector language_guided_grasp.launch \
-  device:=cuda \
-  video_dev:=/dev/video0 \
-  pixel_format:=mjpeg \
-  image_width:=640 \
-  image_height:=480 \
-  framerate:=10 \
-  vision_config:=$(rospack find sagittarius_object_color_detector)/config/vision_config_pick_front.yaml \
-  place_front_view_vision_config:=$(rospack find sagittarius_object_color_detector)/config/vision_config_place_front.yaml \
-  execute_grasp:=false
+EXECUTE_GRASP=false bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_single_machine_gpu_grasp.sh
 ```
 
-确认无误后再把：
+这个模式适合先检查：
 
-```text
-execute_grasp:=true
+- 相机是否正常
+- GroundingDINO 是否成功加载
+- 目标检测框是否正确
+- refined center 是否落在目标中心附近
+- 像素点映射到机械臂坐标是否合理
+- 当前使用的 `vision_config` 是否对应当前观察位
+
+在这个模式下，即使检测到了目标，机械臂也不会真实执行抓取动作。
+
+---
+
+### 8.2 真实抓取模式：机械臂会真的动
+
+确认检测结果和坐标映射都合理之后，再打开真实执行：
+
+```bash
+EXECUTE_GRASP=true bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_single_machine_gpu_grasp.sh
 ```
+
+如果脚本已经有执行权限，也可以直接运行：
+
+```bash
+EXECUTE_GRASP=true src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_single_machine_gpu_grasp.sh
+```
+
+为了避免权限问题，推荐优先使用带 `bash` 的版本：
+
+```bash
+EXECUTE_GRASP=true bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_single_machine_gpu_grasp.sh
+```
+
+---
+
+### 8.3 常用覆盖参数
+
+脚本里的大部分参数已经有默认值。只有现场设备或测试目的发生变化时，才需要额外覆盖参数。
+
+#### 更换相机设备号
+
+如果相机不是 `/dev/video0`，例如变成了 `/dev/video2`，可以这样启动：
+
+```bash
+VIDEO_DEV=/dev/video2 EXECUTE_GRASP=true bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_single_machine_gpu_grasp.sh
+```
+
+#### 启动后自动带一个目标文本
+
+如果想启动后直接检测某个目标，例如 `red block`：
+
+```bash
+TARGET_TEXT="red block" EXECUTE_GRASP=true bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_single_machine_gpu_grasp.sh
+```
+
+#### 测试完整同色分类任务
+
+如果要测试完整任务：
+
+```bash
+TARGET_TEXT="put each block into the bucket of the same color" EXECUTE_GRASP=true bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_single_machine_gpu_grasp.sh
+```
+
+#### 临时关闭真实执行
+
+即使带了目标文本，也可以保持安全检测模式：
+
+```bash
+TARGET_TEXT="red block" EXECUTE_GRASP=false bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_single_machine_gpu_grasp.sh
+```
+
+---
+
+### 8.4 手动 roslaunch
+
+一般情况下，不需要手动写完整 `roslaunch` 命令。只有在调试 launch 参数、排查脚本问题，或者临时绕过脚本时，才直接使用：
+
+```bash
+roslaunch sagittarius_object_color_detector language_guided_grasp.launch
+```
+
+如果需要覆盖某些 launch 参数，也可以手动添加，例如：
+
+```bash
+roslaunch sagittarius_object_color_detector language_guided_grasp.launch execute_grasp:=false
+```
+
+但正常实机测试和演示时，优先使用：
+
+```bash
+bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_single_machine_gpu_grasp.sh
+```
+
+或者真实抓取：
+
+```bash
+EXECUTE_GRASP=true bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_single_machine_gpu_grasp.sh
+```
+
+---
 
 ### 8.5 发送目标文本
 
-新开一个终端，加载环境后发送目标：
+如果启动时没有通过 `TARGET_TEXT` 指定目标，也可以在另一个终端中手动发送目标文本。
+
+先进入工作空间并加载环境：
+
+```bash
+cd ~/sagittarius_ws
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
+```
+
+发送单目标抓取任务：
 
 ```bash
 rostopic pub -1 /grasp_target_text std_msgs/String "data: 'red block'"
 ```
 
-任务级命令示例：
+发送两阶段 pick-place 任务：
+
+```bash
+rostopic pub -1 /grasp_target_text std_msgs/String "data: 'pick red block and place it into red bucket'"
+```
+
+发送同色分类多步任务：
 
 ```bash
 rostopic pub -1 /grasp_target_text std_msgs/String "data: 'put each block into the bucket of the same color'"
 ```
 
 ---
+
+### 8.6 推荐测试顺序
+
+为了避免机械臂误动作，建议按下面顺序测试：
+
+1. 先运行安全检测模式：
+
+```bash
+bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_single_machine_gpu_grasp.sh
+```
+
+2. 发送一个简单目标，例如：
+
+```bash
+rostopic pub -1 /grasp_target_text std_msgs/String "data: 'red block'"
+```
+
+3. 检查标注图、检测框、中心点和坐标映射是否正确。
+
+4. 确认无误后，再运行真实抓取模式：
+
+```bash
+EXECUTE_GRASP=true bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_single_machine_gpu_grasp.sh
+```
+
+5. 先测试单目标抓取，再测试 pick-place，最后再测试完整同色分类任务。
+
+推荐顺序：
+
+```text
+red block
+-> pick red block and place it into red bucket
+-> put each block into the bucket of the same color
+```
 
 ## 9. 常用参数说明
 
