@@ -1,218 +1,297 @@
-# sagittarius-semantic-grasp
+# Sagittarius Semantic Grasp
 
-Sagittarius 机械臂语言引导语义抓取项目
+基于 Sagittarius 机械臂、ROS1、MoveIt、GroundingDINO 与相机标定的语言引导语义抓取 / 放置项目。
 
-## 项目定位
+本项目的目标不是单纯做一个“颜色块识别 demo”，而是把原始 Sagittarius 机械臂的 HSV 颜色抓取例程改造成一个更接近真实机器人应用的语义抓取系统：用户用自然语言指定目标，视觉模型在相机图像中识别目标，系统将像素位置映射到机械臂工作平面坐标，并调用原有 MoveIt / `sgr_ctrl` 执行抓取与放置。
 
-这个仓库基于 Sagittarius ROS1 机械臂栈改造，当前重点是把原来的“HSV 颜色识别抓取”升级为“语言目标识别抓取”：
+---
+
+## 1. 项目概览
+
+当前系统的主流程是：
 
 ```text
-目标文本 -> 感知后端 -> 检测框 -> 像素中心 -> vision_config.yaml 坐标映射 -> sgr_ctrl 抓取
+自然语言任务
+  -> 任务解析，拆成 pick/place 目标
+  -> 相机采图
+  -> GroundingDINO 语义检测
+  -> HSV / 轮廓中心精修
+  -> 像素中心到机械臂平面坐标映射
+  -> Sagittarius MoveIt / sgr_ctrl 执行抓取或放置
 ```
 
-当前已实现的感知后端是 GroundingDINO。架构上已经预留了可插拔后端接口，后续可以继续接入 YOLO-World、OWL-ViT、Grounded-SAM 等模型。
+典型输入可以是：
 
-机械臂执行侧尽量保持原样，仍然复用 Sagittarius MoveIt、底层 SDK 和 `sgr_ctrl` action，不重写整套运动控制。
+```text
+red block
+```
 
-## 项目亮点 / Key Contributions
+也可以是更完整的任务级命令：
 
-这个项目的价值不只是“换了一个检测模型”，而是把原本很固定的颜色抓取例程，推进成一个更接近真实语言引导抓取系统的原型：
+```text
+put each block into the bucket of the same color
+```
 
-- 从基于 HSV 阈值的规则式颜色抓取，升级为基于 GroundingDINO 的语言条件目标抓取
-- 支持语义/类别级目标描述，例如 `banana`、`bottle`、`cube`，不再局限于红绿蓝色块
-- 保留原有 Sagittarius 机械臂执行链路，低侵入复用 MoveIt、SDK 和 `sgr_ctrl` action
-- 保留 `vision_config.yaml` 的像素到机械臂平面坐标映射，避免重新标定整套控制链路
-- 增加安全决策层：无检测、低置信度、无效文本时不触发抓取，把“安全不执行”作为明确行为
-- 增加连续帧稳定检测和 busy 保护，降低瞬时误检或重复触发导致的误抓风险
-- 增加标注图和状态话题，方便演示时解释“模型看到了什么、为什么抓/为什么不抓”
-- 提供静态图片可控验证模式，在 WSL 相机/串口不稳定时仍然可以复现实验链路
-- 支持多观察位扫描：可以配置 `front / left / right` 三个观察位，并为每个观察位使用独立标定文件
-- 支持轻量任务级命令拆解，例如 `抓红色方框放进蓝色桶里面`，先定位抓取目标，再定位放置目标
-- 架构正在向可插拔感知后端演进，未来可以接入 YOLO-World、OWL-ViT、Grounded-SAM 等模型
-- 保留未来双机部署可能性：一台机器跑大模型推理，另一台机器负责相机和机械臂控制
-- 面向资源受限、硬件不稳定环境做了工程化折中，更符合学生项目真实落地过程
+当前系统会将后者拆成多步任务，例如：
 
-## 当前状态
+```text
+1. red block  -> red bucket
+2. blue block -> blue bucket
+3. green block -> green bucket
+```
 
-已确认可以工作的部分：
+每一步包含两个阶段：
 
-- GroundingDINO 环境和权重可以加载
-- 文本目标话题 `/grasp_target_text` 可以驱动检测
-- 测试图片代替相机的静态验证链路已经跑通
-- 检测结果可以继续进入原有 `sgr_ctrl` 抓取执行链路
-- `vision_config.yaml` 线性回归映射仍然保留
-- 标注图输出和状态话题可以用于演示和调试
-- busy 期间收到的新目标会先延后保存，避免中途打断正在执行的抓取
-- 2026-04-22 实机验证：单机模式下 `red block` 已经完成 GroundingDINO 检测、稳定锁定、坐标映射和 `sgr_ctrl` 抓取，日志结果为 `Grasp succeeded`
-- 2026-04-25 代码升级：支持多观察位扫描与动态放置目标，允许先扫 `front / left / right`，再执行 `pick -> place`
+```text
+pick 阶段：识别并抓取 block
+place 阶段：重新观察，识别 bucket，并把物体放到 bucket 附近 / 上方
+```
 
-当前主要限制：
+---
 
-- 在当前 WSL2 + usbipd 环境下，同时透传机械臂串口和摄像头时可能不稳定
-- 真实相机闭环建议优先在原生 Ubuntu 或更稳定的 UVC 摄像头环境下验证
-- 当前 `vision_config.yaml` 如果仍是 `k1=0.0`、`k2=0.0`，不同像素点会映射到同一个机械臂平面坐标。也就是说模型确实根据摄像头选目标，但抓取落点还不会随目标像素位置变化，正式演示前需要手动标定。
-- 多观察位模式下，每个观察位都必须单独标定。不能直接复用 `front` 的 `vision_config.yaml` 去解释 `left/right` 视角下的像素坐标。
+## 2. 当前 main 分支状态
 
-## 主要入口
+当前 `main` 分支已经合入了多阶段 pick/place、前视角九点标定、HSV 中心精修和实机测试相关内容。
 
-推荐使用的新入口：
+### 已经实现并合入 main 的能力
 
-- 主节点：`src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/nodes/language_guided_grasp.py`
-- 主 launch：`src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/launch/language_guided_grasp.launch`
-- 图片测试 launch：`src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/launch/language_guided_grasp_image_test.launch`
+* 使用 GroundingDINO 作为语言条件目标检测后端。
+* 支持通过 `/grasp_target_text` 话题输入自然语言目标。
+* 支持单目标抓取，例如 `red block`、`blue block`。
+* 支持简单任务拆解，例如同色分类任务：`red block -> red bucket`。
+* 支持 pick/place 两阶段流程。
+* 支持 `pick_front` 与 `place_front` 两套独立前视角标定。
+* 支持 3×3 九点手动标定数据。
+* 支持在 GroundingDINO 检测框内部使用 HSV / 轮廓方法精修目标中心。
+* 支持稳定帧锁定，避免瞬时误检直接触发机械臂。
+* 支持低置信度、目标未检测到、文本为空等情况下安全拒绝执行。
+* 支持输出 annotated image，用于观察模型选中了哪里。
+* 支持保存原始图像和标注图，便于调试。
+* 保留原有 Sagittarius 机械臂执行链路，不重写底层运动控制。
 
-兼容保留的旧入口：
+### 最近一次实机测试结果
 
-- `nodes/color_classification.py`
-- `launch/color_classification.launch`
-- `launch/color_classification_image_test.launch`
+在前视角、九点标定与 HSV 中心精修版本中，系统完成了以下实机流程：
 
-旧入口只是为了兼容以前的命令和脚本。新代码已经不再是颜色分类逻辑，推荐以后都使用 `language_guided_grasp` 命名。
+```text
+任务：put each block into the bucket of the same color
 
-## 代码结构
+1. red block  -> red bucket   成功抓取并放置
+2. blue block -> blue bucket  成功抓取并放置
+3. green block -> green bucket
+   - green block 抓取成功
+   - green bucket 在放置阶段未检测到，系统安全失败，没有继续盲目执行
+```
+
+这个结果说明：
+
+* 前视角语义抓取链路已经可以完成连续多步任务。
+* GroundingDINO + HSV 中心精修比单纯检测框中心更适合抓取落点。
+* `pick_front` / `place_front` 分离标定是有效的。
+* 放置阶段仍然更依赖目标可见性，bucket 没有进入清晰视野时会失败。
+
+---
+
+## 3. 硬件与软件环境
+
+### 机械臂硬件
+
+当前项目围绕 Sagittarius 机械臂运行，ROS namespace 使用：
+
+```text
+/sgr532
+```
+
+相关链路包括：
+
+* Sagittarius 机械臂本体
+* Sagittarius MoveIt 配置
+* Sagittarius 底层 SDK / `sgr_ctrl`
+* 机械臂串口设备，通常映射为：
+
+```text
+/dev/ttyACM0
+/dev/sagittarius -> /dev/ttyACM0
+```
+
+如果使用 WSL2，机械臂 USB 串口通常需要通过 Windows `usbipd` 透传。
+
+### 相机硬件
+
+当前测试使用 UVC 相机，通过 ROS `usb_cam` 发布图像，默认设备为：
+
+```text
+/dev/video0
+```
+
+默认图像参数：
+
+```text
+image_width  = 640
+image_height = 480
+framerate    = 10
+pixel_format = mjpeg
+```
+
+### 计算平台
+
+当前项目主要在单机 GPU 模式下调试：
+
+* 操作系统：Ubuntu 20.04 / WSL2 Ubuntu 20.04
+* ROS：ROS Noetic
+* GPU：NVIDIA RTX 4060 级别显卡
+* 推理后端：GroundingDINO，推荐使用 CUDA
+
+推荐正式测试时使用：
+
+```text
+device:=cuda
+```
+
+不建议在正式实机抓取时使用 CPU 推理，因为 GroundingDINO 在 CPU 上速度较慢，容易影响闭环体验。
+
+---
+
+## 4. 仓库结构
+
+主要代码位于：
 
 ```text
 src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/
+```
+
+核心结构如下：
+
+```text
+sagittarius_object_color_detector/
 ├── action/
 │   └── SGRCtrl.action
 ├── config/
-│   ├── HSVParams.cfg
 │   ├── vision_config.yaml
-│   └── manual_calibration_points.example.csv
+│   ├── vision_config_front.yaml
+│   ├── vision_config_pick_front.yaml
+│   ├── vision_config_place_front.yaml
+│   ├── vision_config_left.yaml
+│   ├── vision_config_right.yaml
+│   ├── manual_calibration_points.example.csv
+│   ├── manual_calibration_points_front.csv
+│   ├── manual_calibration_points_pick_front.csv
+│   ├── manual_calibration_points_place_front.csv
+│   ├── manual_calibration_points_left.csv
+│   └── manual_calibration_points_right.csv
 ├── launch/
 │   ├── language_guided_grasp.launch
 │   ├── language_guided_grasp_image_test.launch
 │   ├── language_guided_calibration_base.launch
+│   ├── usb_cam.launch
 │   ├── color_classification.launch
-│   ├── color_classification_image_test.launch
-│   └── usb_cam.launch
+│   └── color_classification_image_test.launch
 ├── nodes/
 │   ├── language_guided_grasp.py
 │   ├── language_guided_calibration.py
-│   ├── color_classification.py
-│   ├── perception_backend_smoke_test.py
+│   ├── manual_vision_calibration.py
 │   ├── publish_test_image.py
 │   ├── sgr_ctrl.py
 │   └── perception_framework/
 │       ├── detection_types.py
 │       ├── backend_factory.py
 │       ├── decision.py
-│       ├── visualization.py
 │       ├── selection.py
 │       ├── stability.py
 │       ├── coordinate_mapping.py
 │       ├── execution.py
+│       ├── center_refinement.py
+│       ├── task_parsing.py
+│       ├── visualization.py
 │       └── backends/
 │           ├── base.py
 │           └── grounding_dino.py
-├── test_data/
-│   └── sample_red_block.ppm
 ├── scripts/
 │   ├── ensure_sagittarius_serial.sh
 │   ├── run_single_machine_gpu_grasp.sh
 │   └── run_manual_vision_calibration.sh
+├── test_data/
+│   └── sample_red_block.ppm
 ├── CMakeLists.txt
 └── package.xml
 ```
 
-核心职责：
+### 重要文件说明
 
-- `language_guided_grasp.py`：ROS 编排节点，负责接收图像和文本、调用感知后端、状态流管理、稳定判断、坐标映射、触发抓取
-- `perception_framework/detection_types.py`：统一检测结果结构 `DetectionResult` 和 `DetectionBox`
-- `perception_framework/backends/base.py`：所有感知后端的抽象接口 `BasePerceptionBackend`
-- `perception_framework/backends/grounding_dino.py`：GroundingDINO 后端实现
-- `perception_framework/backend_factory.py`：根据 `perception_backend` 参数创建后端
-- `perception_framework/selection.py`：目标选择逻辑，当前默认选择最高分框
-- `perception_framework/decision.py`：抓取前安全决策，区分已选中、未检测到、低置信度、无效目标
-- `perception_framework/visualization.py`：绘制检测框、标签、分数、选中中心点和决策状态
-- `perception_framework/stability.py`：连续帧中心点稳定检测
-- `perception_framework/coordinate_mapping.py`：读取 `vision_config.yaml`，把像素中心映射到机械臂平面坐标
-- `perception_framework/execution.py`：对原有 `SGRCtrlAction` 的轻量封装
-- `publish_test_image.py`：把本地图片发布成 `/usb_cam/image_raw`，用于不接真实相机时验证链路
-- `language_guided_calibration.py`：复用原始标定思路，让机械臂移动到已知点，用户放方块，GroundingDINO 记录像素中心并写回 `vision_config.yaml`
-- `perception_backend_smoke_test.py`：不启动 ROS action，只验证感知后端推理输出
-- `scripts/ensure_sagittarius_serial.sh`：检查/修复 WSL 下机械臂串口 `/dev/ttyACM0` 和兼容链接 `/dev/sagittarius`
-- `nodes/manual_vision_calibration.py`：根据手动采集的像素点和机械臂平面坐标拟合 `vision_config.yaml`
+| 文件                                | 作用                                       |
+| --------------------------------- | ---------------------------------------- |
+| `language_guided_grasp.py`        | 主节点，负责任务解析、检测、稳定判断、坐标映射、抓取与放置调度          |
+| `language_guided_calibration.py`  | 语言引导标定节点，可在不同观察位下采集标定点                   |
+| `manual_vision_calibration.py`    | 根据手动采集的像素点和机器人坐标拟合 `vision_config*.yaml` |
+| `center_refinement.py`            | 在检测框内部用 HSV / 轮廓方法精修目标中心                 |
+| `task_parsing.py`                 | 将自然语言任务拆解为 pick/place 步骤                 |
+| `coordinate_mapping.py`           | 读取 `vision_config*.yaml`，执行像素到机械臂平面的线性映射 |
+| `execution.py`                    | 对原有 `SGRCtrlAction` 的轻量封装                |
+| `grounding_dino.py`               | GroundingDINO 后端                         |
+| `run_single_machine_gpu_grasp.sh` | 单机 GPU 实机测试启动脚本                          |
+| `ensure_sagittarius_serial.sh`    | 检查和修复 Sagittarius 串口映射                   |
 
-## 架构说明
+---
 
-当前内部流程分成 5 层：
+## 5. 系统架构
+
+系统分为五层：
 
 ```text
 输入层
-  图像 /usb_cam/image_raw
-  文本 /grasp_target_text
+  - 相机图像 /usb_cam/image_raw
+  - 文本任务 /grasp_target_text
 
 感知层
-  BasePerceptionBackend
-  GroundingDinoBackend
+  - BasePerceptionBackend
+  - GroundingDinoBackend
+  - HSV / contour center refinement
 
 决策层
-  select_highest_score
-  evaluate_target_selection
-  CenterStabilityFilter
+  - 目标选择
+  - 置信度过滤
+  - 连续帧稳定检测
+  - 任务状态机
 
 映射层
-  VisionPlaneMapper
-  vision_config.yaml
+  - VisionPlaneMapper
+  - vision_config_pick_front.yaml
+  - vision_config_place_front.yaml
+  - vision_config_left.yaml / right.yaml
 
 执行层
-  SagittariusGraspExecutor
-  SGRCtrlAction
+  - SagittariusGraspExecutor
+  - SGRCtrlAction
+  - MoveIt
+  - Sagittarius SDK
 ```
 
-在多观察位任务模式下，执行前会先跑一个轻量扫描流程：
+主节点维护的状态流大致为：
 
 ```text
-任务文本 -> pick/place 目标拆解 -> front/left/right 依次观察
-         -> 用各观察位自己的 vision_config 映射到机械臂平面
-         -> pick -> place
+waiting_for_target
+  -> detecting
+  -> target_locked
+  -> grasping
+  -> placing
+  -> done
 ```
 
-统一感知输出结构：
+失败时进入：
 
 ```text
-DetectionResult
-├── source_model
-├── timestamp
-├── image_size
-├── boxes
-├── selected_box
-├── selected_center
-├── mask
-└── metadata
+failed
 ```
 
-每个检测框：
+常见失败原因包括：
 
-```text
-DetectionBox
-├── bbox_xyxy
-├── score
-├── label
-└── metadata
-```
-
-下游抓取逻辑只依赖统一结构，不直接依赖 GroundingDINO 的 tensor 输出。这样以后换模型时，尽量只新增 backend，不动抓取执行侧。
-
-## 运行状态流
-
-主节点现在维护一个轻量状态流，用于减少重复触发，也方便演示和排查：
-
-```text
-waiting_for_target -> detecting -> target_locked -> grasping -> placing -> done
-                                      └──────────── failed
-```
-
-状态含义：
-
-- `waiting_for_target`：节点已启动，等待 `/grasp_target_text` 输入
-- `detecting`：已有目标文本，正在对图像做语言条件检测
-- `target_locked`：目标中心在连续帧中稳定，准备进入抓取
-- `grasping`：正在调用 `sgr_ctrl` 执行抓取
-- `placing`：抓取成功后正在执行可选放置动作
-- `done`：一次抓取流程成功结束
-- `failed`：当前请求未满足执行条件，例如无检测、低置信度、后端不可用或抓取失败
+* 目标文本为空
+* 没有检测到目标
+* 检测置信度过低
+* 目标中心不稳定
+* MoveIt 规划失败
+* 放置目标不可见
+* 机械臂执行失败
 
 状态会发布到：
 
@@ -226,563 +305,302 @@ waiting_for_target -> detecting -> target_locked -> grasping -> placing -> done
 rostopic echo /language_guided_grasp/state
 ```
 
-如果抓取执行期间又收到新的目标文本，节点不会立即打断机械臂动作，而是先缓存为 pending target，当前动作结束后再进入下一轮检测。
+---
 
-## 多观察位动态放置
+## 6. 坐标映射与标定
 
-现在除了单目标文本，例如：
+### 6.1 为什么需要标定
 
-```text
-red block
-```
-
-也支持轻量任务级文本，例如：
+视觉模型输出的是图像像素位置，例如：
 
 ```text
-抓红色方框放进蓝色桶里面
-pick red block and place it into blue bucket
+pixel_x, pixel_y
 ```
 
-节点会先把文本拆成：
-
-- `pick_target`
-- `place_target`
-
-当前推荐流程分两段：
-
-- `pick`：先在单独的高位 `pick_front` 视角锁定抓取目标
-- `place`：抓起后再按放置扫描视角去找目标区域
-
-放置阶段按 `place_scan_view_order` 指定的顺序去观察位扫描，默认顺序为：
+机械臂执行需要的是工作平面坐标，例如：
 
 ```text
-front,left,right
+robot_x, robot_y, robot_z
 ```
 
-如果某个观察位成功锁定放置目标，就使用该观察位对应的标定文件完成像素到机械臂平面坐标映射。这样可以支持“抓取先求稳，放置再扩大扫描范围”的情况。
+所以必须通过标定建立映射关系。
 
-### 两阶段多观察位参数
-
-主 launch 现在支持：
-
-- `search_pose_*`
-  这组参数现在建议专门作为 `pick_front` 抓取观察位使用
-- `vision_config:=...`
-  这组参数建议对应 `pick_front` 的标定
-- `place_front_view_enabled:=true`
-- `place_front_view_vision_config:=...`
-- `place_front_view_x/y/z/roll/pitch/yaw:=...`
-
-- `left_view_enabled:=true`
-- `left_view_vision_config:=.../vision_config_left.yaml`
-- `left_view_x/y/z/roll/pitch/yaw:=...`
-- `right_view_enabled:=true`
-- `right_view_vision_config:=.../vision_config_right.yaml`
-- `right_view_x/y/z/roll/pitch/yaw:=...`
-- `place_scan_view_order:=front,left,right`
-- `scan_attempts_per_view:=5`
-- `scan_stable_required:=3`
-- `scan_settle_sec:=0.8`
-- `dynamic_place_z:=0.20`
-
-说明：
-
-- `pick_front` 和 `place_front` 可以相同，也可以分开单独调
-- `left/right` 必须显式提供各自的 `vision_config`
-- 默认推荐把 `pick_front` 抬高到 `z=0.20` 左右，优先保证抓取时视野更完整
-- 默认推荐把 `left/right` 的观察位也放在 `z=0.20` 左右，并让 `yaw` 接近 `+/-1.57`，真正转向左右侧进行放置扫描
-- `dynamic_place_z` 是“把物体放到桶上方并松手”的绝对 Z，高度应根据桶口高度手动设定
-
-### 两阶段标定建议
-
-推荐至少准备这些文件：
-
-```text
-config/vision_config_pick_front.yaml
-config/vision_config_place_front.yaml
-config/vision_config_left.yaml
-config/vision_config_right.yaml
-```
-
-现有 `language_guided_calibration.py` 已经支持通过不同的：
-
-- `~vision_config`
-- `~observe_x/y/z/roll/pitch/yaw`
-
-来给不同观察位单独标定。也就是说，不需要重写标定脚本，只要换观察位姿和输出路径即可。
-
-标定点不要都集中在中间。推荐思路：
-
-- `pick_front`：覆盖抓取常用区域，而且点位尽量拉开，不要全挤在正中心
-- `place_front`：覆盖桌面中间放置区域
-- `left`：点整体偏到 `y > 0` 的左侧区域
-- `right`：点整体偏到 `y < 0` 的右侧区域
-
-一个实用的 5 点示例：
-
-```text
-pick_front  : 0.210,-0.040 ; 0.210,0.040 ; 0.235,0.000 ; 0.260,-0.030 ; 0.260,0.030
-place_front : 0.220,-0.050 ; 0.220,0.050 ; 0.245,0.000 ; 0.270,-0.030 ; 0.270,0.030
-left        : 0.220,0.030 ; 0.230,0.070 ; 0.250,0.100 ; 0.260,0.050 ; 0.280,0.080
-right       : 0.220,-0.030 ; 0.230,-0.070 ; 0.250,-0.100 ; 0.260,-0.050 ; 0.280,-0.080
-```
-
-这样比“所有视角都标桌面正中间那一小块”更适合两阶段扫描。
-
-## 安全决策与可视化
-
-当前抓取前会经过一个明确的安全决策层：
-
-- `selected`：检测到目标，最高分候选超过 `min_grasp_score`，继续稳定检测，稳定后才抓取
-- `no_detection`：没有检测到与文本目标匹配的候选，不触发机械臂
-- `low_confidence`：有候选但分数低于 `min_grasp_score`，不触发机械臂
-- `invalid_target`：目标文本为空或过短，不触发机械臂
-
-默认会发布一张标注图，便于演示和排查：
-
-```text
-/language_guided_grasp/annotated_image
-```
-
-标注图包含检测框、候选标签、分数、选中中心点和当前决策状态。图片测试模式默认还会把最新标注图保存到：
-
-```text
-/tmp/language_guided_grasp_latest.jpg
-```
-
-实机单机脚本默认还会保存两张调试图，方便确认“相机到底看到了什么”和“模型到底选中了哪里”：
-
-```text
-/tmp/language_guided_grasp_raw_single_gpu.jpg
-/tmp/language_guided_grasp_single_gpu.jpg
-```
-
-含义：
-
-- `language_guided_grasp_raw_single_gpu.jpg`：原始相机画面，不带任何检测框
-- `language_guided_grasp_single_gpu.jpg`：带 GroundingDINO 检测框、分数、选中中心点的标注图
-
-如果出现“模型能抓但落点偏很多”，优先检查这两张图和 ROS 日志里的 `Stable target ... pixel center`、`Target ... mapped to arm plane`。如果图里目标框是对的，但映射出的 `x/y` 明显不随像素变化，问题通常在 `vision_config.yaml` 标定，而不是模型检测。
-
-## 环境准备
-
-当前调试机器上 GroundingDINO 实际使用路径：
-
-```text
-/mnt/d/ai_models/GroundingDINO
-/mnt/d/ai_models/groundingdino-venv
-/mnt/d/ai_models/GroundingDINO/weights/groundingdino_swint_ogc.pth
-```
-
-启动前建议：
-
-```bash
-cd ~/sagittarius_ws
-source /mnt/d/ai_models/groundingdino-venv/bin/activate
-source /opt/ros/noetic/setup.bash
-source devel/setup.bash
-export PYTHONPATH=/mnt/d/ai_models/GroundingDINO:$PYTHONPATH
-export MPLCONFIGDIR=/tmp/matplotlib-cfg
-mkdir -p "$MPLCONFIGDIR"
-```
-
-当前额外安装过的 Python 依赖：
-
-```text
-rospkg
-catkin_pkg
-empy
-netifaces
-```
-
-## 启动方式
-
-### 机械臂串口初始化检查
-
-如果启动时报：
-
-```text
-open serial failed :/dev/sagittarius fail
-Failed to init device
-GetDataGram: Serial is not open
-```
-
-先不要继续做标定或抓取，先确认 WSL 是否生成了机械臂串口节点。
-
-Windows PowerShell 中确认机械臂已经 attach：
-
-```powershell
-usbipd list
-```
-
-机械臂通常显示为：
-
-```text
-2e88:4603 USB 串行设备 / HDSC CDC Device
-```
-
-如果状态不是 `Attached`，在 PowerShell 中执行：
-
-```powershell
-usbipd attach --wsl --busid <机械臂BUSID>
-```
-
-回到 Ubuntu 终端，先运行串口检查脚本：
-
-```bash
-cd ~/sagittarius_ws
-bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/ensure_sagittarius_serial.sh
-```
-
-正常结果应该能看到：
-
-```text
-/dev/ttyACM0
-/dev/sagittarius -> /dev/ttyACM0
-```
-
-如果脚本提示需要创建 `/dev/ttyACM0`，它会尝试使用 `sudo mknod`。如果你的终端要求输入密码，输入 Ubuntu 用户密码即可。
-
-如果出现下面这种 sudo 本身的权限错误：
-
-```text
-sudo: /usr/bin/sudo must be owned by uid 0 and have the setuid bit set
-```
-
-说明当前 WSL 的 sudo 权限位异常。请在 Windows PowerShell 中执行一次：
-
-```powershell
-wsl -d Ubuntu-20.04 -u root -- bash -lc "chown root:root /usr/bin/sudo /bin/su && chmod 4755 /usr/bin/sudo /bin/su"
-```
-
-然后回到 Ubuntu 重新运行串口检查脚本。
-
-如果 `lsusb` 能看到 `2e88:4603`，但是脚本仍然找不到 `/dev/ttyACM0`，通常说明 usbipd/WSL 这次 attach 不完整。推荐按顺序做：
-
-```powershell
-usbipd detach --busid <机械臂BUSID>
-usbipd attach --wsl --busid <机械臂BUSID>
-```
-
-如果仍然不行，重启 WSL 后再 attach：
-
-```powershell
-wsl --shutdown
-usbipd attach --wsl --busid <机械臂BUSID>
-```
-
-再回到 Ubuntu 运行：
-
-```bash
-lsusb
-ls -l /dev/ttyACM* /dev/sagittarius
-bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/ensure_sagittarius_serial.sh
-```
-
-只有这个检查通过后，再启动 `demo_true.launch` 或语言抓取 launch。
-
-### 单机 GPU 实机测试推荐参数
-
-你现在的使用方式是单机：同一台电脑同时连接机械臂、机械臂摄像头，并运行 GroundingDINO。因为有 RTX 4060，推荐使用：
-
-```bash
-device:=cuda
-```
-
-不要再用 `device:=cpu` 做正式测试，否则 GroundingDINO 会把 CPU 打满，推理也会很慢。
-
-单机实机推荐启动参数：
-
-```bash
-device:=cuda \
-video_dev:=/dev/video0 \
-pixel_format:=mjpeg \
-image_width:=640 \
-image_height:=480 \
-framerate:=10 \
-search_pose_mode:=camera_down \
-search_pose_x:=0.20 \
-search_pose_y:=0.00 \
-search_pose_z:=0.15 \
-search_pose_pitch:=1.57 \
-return_to_search_pose_after_grasp:=false \
-pick_orientation_mode:=auto \
-drop_after_grasp:=false
-```
-
-这里的含义是：
-
-- 启动后先让机械臂进入准备/观察姿态，避免机械臂挡住摄像头导致看不到桌面目标
-- 抓取结束后不强制回到硬编码姿态，避免再次突然朝上
-- 抓取动作本身优先使用动态姿态，由 `sgr_ctrl` 根据目标 XYZ 计算末端朝向
-- 第一次实机建议关闭放置动作，只验证“识别 -> 抓取”
-
-已经提供一个单机 GPU 启动脚本：
-
-```bash
-src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_single_machine_gpu_grasp.sh
-```
-
-默认 `EXECUTE_GRASP=false`，只做检测和映射，不执行真实抓取。确认无误后再设置 `EXECUTE_GRASP=true`。
-
-### 位姿与抓取姿态参数
-
-为了避免机械臂在启动或抓取结束后突然移动到错误的硬编码姿态，当前默认行为保持兼容，但实机脚本默认使用 `camera_down` 桌面观察姿态：
-
-- `search_pose_mode:=none`：launch 默认值，启动时不强制移动到固定搜索位姿
-- `search_pose_mode:=stay` / `hold_current`：兼容写法，同样表示保持当前位置
-- `search_pose_mode:=camera_down` / `table_view`：推荐实机模式，进入可配置 XYZ+RPY 桌面观察姿态，让相机朝向桌面
-- `search_pose_mode:=define_stay`：显式启用旧的 `ACTION_TYPE_DEFINE_STAY` 预设姿态；这个姿态可能让机械臂向上折叠、相机朝天，通常不推荐
-- `search_pose_mode:=xyz_rpy` / `legacy`：兼容旧的固定 XYZ+RPY 搜索位姿，当前等价于可配置桌面观察姿态
-- `search_pose_x/y/z/roll/pitch/yaw`：桌面观察姿态参数，默认 `x=0.20, y=0.00, z=0.15, roll=0.0, pitch=1.57, yaw=0.0`
-- `return_to_search_pose_after_grasp:=false`：默认值，抓取结束后不再强制回到搜索位姿
-- `return_to_search_pose_after_grasp:=true`：抓取结束后按 `search_pose_mode` 执行回位
-- `pick_orientation_mode:=auto`：默认值，抓取时优先使用 `ACTION_TYPE_PICK_XYZ`，由 `sgr_ctrl` 根据目标点动态计算末端姿态
-- `pick_orientation_mode:=fixed_rpy` / `legacy`：显式使用旧的固定 `pitch=1.57` 抓取姿态
-
-如果摄像头视野需要机械臂先抬到准备姿态，实机抓取时使用：
-
-```bash
-search_pose_mode:=camera_down \
-search_pose_x:=0.20 \
-search_pose_y:=0.00 \
-search_pose_z:=0.15 \
-search_pose_pitch:=1.57 \
-return_to_search_pose_after_grasp:=false \
-pick_orientation_mode:=auto \
-drop_after_grasp:=false
-```
-
-这样只在启动阶段进入相机朝向桌面的观察/准备姿态，抓取结束后不会再次强制回到硬编码姿态。如果现场观察发现相机还不够朝下，优先小幅调整 `search_pose_z` 或 `search_pose_pitch`，不要再使用 `define_stay`。
-
-### 手动标定 vision_config.yaml
-
-当前语言抓取仍然沿用原开源包的线性映射约定：
+当前系统沿用原 Sagittarius 例程中的线性映射形式：
 
 ```text
 robot_x = k1 * pixel_y + b1
 robot_y = k2 * pixel_x + b2
 ```
 
-如果 `config/vision_config.yaml` 里 `k1=0.0` 且 `k2=0.0`，说明还没有有效标定。此时模型即使正确识别了目标，不同像素位置也都会映射到同一个机械臂平面点，抓取会明显偏。
+对应 YAML 文件中的参数：
 
-原始开源包也提供了 HSV 蓝色块标定流程：
-
-```bash
-roslaunch sagittarius_object_color_detector camera_calibration_hsv.launch
-bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/send_topic.sh
+```yaml
+LinearRegression:
+  k1: ...
+  b1: ...
+  k2: ...
+  b2: ...
 ```
 
-这个流程会调用：
+### 6.2 当前可用标定文件
+
+当前 main 分支中建议使用以下标定文件：
+
+| 文件                               | 用途                     |
+| -------------------------------- | ---------------------- |
+| `vision_config_pick_front.yaml`  | 抓取阶段前视角标定              |
+| `vision_config_place_front.yaml` | 放置阶段前视角标定              |
+| `vision_config_left.yaml`        | 左观察位标定，框架已支持，需根据现场实测确认 |
+| `vision_config_right.yaml`       | 右观察位标定，框架已支持，需根据现场实测确认 |
+| `vision_config_front.yaml`       | 通用前视角配置，兼容保留           |
+| `vision_config.yaml`             | 原始兼容入口，不建议作为最新主流程唯一配置  |
+
+当前最可靠的实机结果来自：
 
 ```text
-nodes/calibration.py
-nodes/calibration_pose.py
-scripts/send_topic.sh
+vision_config_pick_front.yaml
+vision_config_place_front.yaml
 ```
 
-但它依赖 HSV 蓝色方块识别，和当前 GroundingDINO 语言抓取链路不是完全同一套感知逻辑。当前项目更推荐下面的手动 CSV 标定：用语言抓取节点保存标注图，人工记录每个目标中心像素和对应机械臂平面坐标，再拟合 `vision_config.yaml`。
+### 6.3 当前九点标定数据
 
-如果你不想手动猜 `robot_x,robot_y`，推荐使用新的语言辅助标定脚本。它复刻原包思路：机械臂先移动到 5 个已知坐标，你把红色方块放到夹爪正下方，这样方块真实坐标就等于机械臂当前已知坐标；然后机械臂移到观察姿态，GroundingDINO 识别方块中心并自动配对。
-
-终端 1：启动机械臂、MoveIt、`sgr_ctrl` 和相机，不启动抓取节点：
-
-```bash
-cd ~/sagittarius_ws
-source /mnt/d/ai_models/groundingdino-venv/bin/activate
-source /opt/ros/noetic/setup.bash
-source devel/setup.bash
-export PYTHONPATH=/mnt/d/ai_models/GroundingDINO:$PYTHONPATH
-export MPLCONFIGDIR=/tmp/matplotlib-cfg
-mkdir -p "$MPLCONFIGDIR"
-
-roslaunch sagittarius_object_color_detector language_guided_calibration_base.launch \
-  video_dev:=/dev/video0 \
-  pixel_format:=mjpeg \
-  image_width:=640 \
-  image_height:=480 \
-  framerate:=10
-```
-
-这个 launch 只启动基础服务和相机，不会主动执行标定点移动。标定移动会在终端 2 的交互脚本里按步骤触发。
-
-终端 2：运行交互式语言标定脚本：
-
-```bash
-cd ~/sagittarius_ws
-source /mnt/d/ai_models/groundingdino-venv/bin/activate
-source /opt/ros/noetic/setup.bash
-source devel/setup.bash
-export PYTHONPATH=/mnt/d/ai_models/GroundingDINO:$PYTHONPATH
-export MPLCONFIGDIR=/tmp/matplotlib-cfg
-mkdir -p "$MPLCONFIGDIR"
-
-rosrun sagittarius_object_color_detector language_guided_calibration.py \
-  _target_text:="red block" \
-  _device:=cuda \
-  _image_topic:=/usb_cam/image_raw \
-  _groundingdino_config:=/mnt/d/ai_models/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
-  _groundingdino_weights:=/mnt/d/ai_models/GroundingDINO/weights/groundingdino_swint_ogc.pth \
-  _vision_config:=$HOME/sagittarius_ws/src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/config/vision_config.yaml \
-  _output_csv:=$HOME/sagittarius_ws/src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/config/manual_calibration_points.csv \
-  _image_dir:=/tmp/language_guided_calibration \
-  _place_z:=0.12 \
-  _place_z_fallbacks:=0.12,0.15,0.18 \
-  _update_vision_config:=true
-```
-
-如果你在做 `left/right` 多观察位标定，不要只改 `observe_y`，还要同步给 `observe_yaw` 一个明显的偏航角。例如：
-
-```bash
-# left
-_observe_x:=0.20 _observe_y:=0.08 _observe_z:=0.15 \
-_observe_roll:=0.0 _observe_pitch:=1.57 _observe_yaw:=0.45
-
-# right
-_observe_x:=0.20 _observe_y:=-0.08 _observe_z:=0.15 \
-_observe_roll:=0.0 _observe_pitch:=1.57 _observe_yaw:=-0.45
-```
-
-否则机械臂只是“平移到左边/右边”，相机朝向并没有真正左转/右转，多观察位标定意义会很弱。
-
-运行后按终端提示操作：
-
-1. 机械臂移动到第 1 个已知点。
-2. 把红色方块放到夹爪正下方。
-3. 按回车。
-4. 机械臂移到观察姿态，相机拍照，GroundingDINO 记录像素中心。
-5. 重复到第 5 个点。
-
-脚本会自动生成：
+当前 main 分支中包含两套关键九点标定数据：
 
 ```text
-src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/config/manual_calibration_points.csv
-/tmp/language_guided_calibration/point_01_raw.jpg
-/tmp/language_guided_calibration/point_01_annotated.jpg
+manual_calibration_points_pick_front.csv
+manual_calibration_points_place_front.csv
+```
+
+它们都是 3×3 网格标定，机器人平面点覆盖：
+
+```text
+x = 0.22, 0.24, 0.26
+y = -0.03, 0.00, 0.03
+```
+
+这两套数据分别用于：
+
+* 抓取阶段：`pick_front`
+* 放置阶段：`place_front`
+
+注意：抓取和放置时机械臂姿态、相机视角、目标类型可能不同，所以不要随便把 `pick_front` 的标定直接用于 `place_front`。
+
+### 6.4 手动标定流程
+
+推荐标定流程：
+
+1. 让机械臂移动到固定观察位。
+2. 在桌面上放置标定物，例如蓝色方块或桶。
+3. 用 GroundingDINO 检测目标。
+4. 在检测框内部使用 HSV / 轮廓方法得到更稳定的中心点。
+5. 记录：
+
+```text
+pixel_x, pixel_y, robot_x, robot_y, score, label
+```
+
+6. 保存为 `manual_calibration_points_*.csv`。
+7. 使用手动标定脚本拟合 `vision_config_*.yaml`。
+
+典型标定数据格式：
+
+```csv
+pixel_x,pixel_y,robot_x,robot_y,score,label
+383.7,376.9,0.22,-0.03,0.95,blue block
 ...
 ```
 
-并写回：
+推荐至少使用 5 个点，当前主流程使用 9 个点更稳定。
+
+### 6.5 标定注意事项
+
+* 标定点不要全部集中在图像中心。
+* 标定区域应覆盖实际抓取 / 放置常用区域。
+* `pick_front` 应覆盖 block 常出现的区域。
+* `place_front` 应覆盖 bucket 常出现的区域。
+* 如果相机位置、机械臂观察位姿、分辨率发生变化，需要重新标定。
+* 如果从 WSL2 切换到原生 Ubuntu，理论上标定参数可以保留，但只要相机物理安装位置变化，就必须重标。
+* 如果发现模型框选正确但机械臂落点偏，优先检查标定，而不是优先怀疑 GroundingDINO。
+
+---
+
+## 7. 可用测试方式
+
+本项目建议按从安全到危险的顺序测试，不要一上来就执行真实抓取。
+
+### 7.1 静态图片测试
+
+用途：验证 GroundingDINO 后端、任务文本、检测结果和可视化，不需要真实机械臂执行。
+
+适合场景：
+
+* 没有接机械臂
+* 相机不稳定
+* 只想验证模型是否能识别目标
+* 想调试文本 prompt、置信度阈值、标注图输出
+
+相关入口：
 
 ```text
-src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/config/vision_config.yaml
+language_guided_grasp_image_test.launch
+publish_test_image.py
 ```
 
-如果想先只采集和试算，不写回配置，把 `_update_vision_config:=true` 改成：
+### 7.2 相机实时检测但不执行
 
-```bash
-_update_vision_config:=false
-```
+用途：验证真实相机画面、GroundingDINO 检测、中心精修和坐标映射，但不让机械臂动作。
 
-如果第一个标定点仍然出现 MoveIt 自碰撞或 `result=3`，说明当前机械臂起始状态不适合直接去低位参考点。先不要硬抓，可以把标定参考高度调高：
-
-```bash
-_place_z:=0.15 \
-_place_z_fallbacks:=0.15,0.18,0.22
-```
-
-标定只需要 `x/y` 已知，不要求夹爪真的贴近桌面。把红块放在夹爪垂直投影下方即可。
-
-手动标定需要准备一个 CSV 文件，记录几组点：
+建议设置：
 
 ```text
-pixel_x,pixel_y,robot_x,robot_y
+execute_grasp:=false
 ```
 
-含义：
+这是实机前最重要的一步。你应该确认：
 
-- `pixel_x,pixel_y`：目标在相机图像中的中心点，可以从标注图或日志里的 `center` 读取
-- `robot_x,robot_y`：你希望机械臂在桌面平面上抓取的实际坐标，单位是米
+* annotated image 中目标框正确
+* refined center 落在目标几何中心附近
+* 日志中的 mapped x/y 合理
+* 目标移动时 mapped x/y 会跟着变化
 
-仓库里提供了示例文件：
+### 7.3 单目标真实抓取测试
+
+用途：只测试一个目标的完整抓取链路。
+
+建议输入：
 
 ```text
-src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/config/manual_calibration_points.example.csv
+red block
+blue block
+green block
 ```
 
-正式标定时复制一份：
+建议先关闭放置：
+
+```text
+drop_after_grasp:=false
+```
+
+确认抓取成功后，再开启 place 相关逻辑。
+
+### 7.4 两阶段 pick/place 测试
+
+用途：测试抓取后重新寻找放置目标。
+
+示例命令：
+
+```text
+pick red block and place it into red bucket
+```
+
+或者：
+
+```text
+put red block into red bucket
+```
+
+推荐先只使用前视角：
+
+```text
+place_scan_view_order:=front
+```
+
+当前前视角是已验证最充分的模式。
+
+### 7.5 同色分类多步任务测试
+
+用途：测试任务拆解、多步连续执行和失败保护。
+
+示例命令：
+
+```text
+put each block into the bucket of the same color
+```
+
+当前系统会拆成：
+
+```text
+red block -> red bucket
+blue block -> blue bucket
+green block -> green bucket
+```
+
+最近实机结果显示：红色和蓝色完整成功，绿色抓取成功，但绿色桶未检测到，因此放置阶段安全失败。
+
+---
+
+## 8. 推荐启动方式
+
+### 8.1 环境准备
+
+进入工作空间：
 
 ```bash
 cd ~/sagittarius_ws
-cp src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/config/manual_calibration_points.example.csv \
-   src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/config/manual_calibration_points.csv
 ```
 
-把 `manual_calibration_points.csv` 里的示例数值换成你自己测到的点，建议至少 5 个点：中心、左上、右上、左下、右下。
-
-推荐采集方式：
-
-1. 运行单机脚本，但先关闭真实抓取，只保存原图和标注图。
-2. 在桌面上放置红色方块，发送 `red block`。
-3. 读取日志里的像素中心，或打开标注图查看中心点。
-4. 把这个方块在桌面上对应的机械臂平面坐标记为 `robot_x,robot_y`。
-5. 移动方块到下一个位置，重复采集至少 5 个点。
-
-采集命令示例：
+加载 ROS 环境：
 
 ```bash
-cd ~/sagittarius_ws
-EXECUTE_GRASP=false \
-DEVICE=cuda \
-SAVE_RAW_IMAGE=true \
-RAW_IMAGE_PATH=/tmp/language_guided_grasp_raw_calib.jpg \
-SAVE_ANNOTATED_IMAGE=true \
-ANNOTATED_IMAGE_PATH=/tmp/language_guided_grasp_annotated_calib.jpg \
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
+```
+
+如果使用 GroundingDINO 虚拟环境：
+
+```bash
+source /mnt/d/ai_models/groundingdino-venv/bin/activate
+export PYTHONPATH=/mnt/d/ai_models/GroundingDINO:$PYTHONPATH
+export MPLCONFIGDIR=/tmp/matplotlib-cfg
+mkdir -p "$MPLCONFIGDIR"
+```
+
+### 8.2 检查机械臂串口
+
+先运行：
+
+```bash
+bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/ensure_sagittarius_serial.sh
+```
+
+正常情况下应该看到：
+
+```text
+/dev/ttyACM0
+/dev/sagittarius -> /dev/ttyACM0
+```
+
+如果在 WSL2 中使用机械臂，需要先在 Windows PowerShell 中通过 `usbipd` attach 机械臂 USB 设备。
+
+### 8.3 推荐单机 GPU 测试脚本
+
+当前推荐入口：
+
+```bash
 bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_single_machine_gpu_grasp.sh
 ```
 
-新开一个终端发送目标：
-
-```bash
-cd ~/sagittarius_ws
-source /opt/ros/noetic/setup.bash
-source devel/setup.bash
-rostopic pub /grasp_target_text std_msgs/String "data: 'red block'" -1
-```
-
-查看保存结果：
-
-```bash
-ls -l /tmp/language_guided_grasp_raw_calib.jpg /tmp/language_guided_grasp_annotated_calib.jpg
-```
-
-如果需要从 Windows 打开图片，可以复制到桌面：
-
-```bash
-cp /tmp/language_guided_grasp_raw_calib.jpg /mnt/c/Users/HankL/Desktop/
-cp /tmp/language_guided_grasp_annotated_calib.jpg /mnt/c/Users/HankL/Desktop/
-```
-
-先只试算，不写入配置：
-
-```bash
-cd ~/sagittarius_ws
-python3 src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/nodes/manual_vision_calibration.py \
-  --csv src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/config/manual_calibration_points.csv \
-  --vision-config src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/config/vision_config.yaml \
-  --dry-run
-```
-
-确认输出的平均误差合理后，写回 `vision_config.yaml`：
-
-```bash
-cd ~/sagittarius_ws
-bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/run_manual_vision_calibration.sh
-```
-
-脚本会自动备份旧配置，备份文件形如：
+该脚本适合单机模式：
 
 ```text
-vision_config.yaml.bak_YYYYMMDD_HHMMSS
+同一台电脑连接机械臂 + 相机 + 运行 GroundingDINO
 ```
 
-写回后重新启动语言抓取节点，并确认启动日志不再出现：
+第一次运行建议保持：
 
 ```text
-vision_config mapping is degenerate
+EXECUTE_GRASP=false
 ```
 
-### 真实相机闭环
+确认检测、中心点和坐标映射都合理后，再改为：
+
+```text
+EXECUTE_GRASP=true
+```
+
+### 8.4 直接 roslaunch 示例
+
+可以直接启动主 launch：
 
 ```bash
 roslaunch sagittarius_object_color_detector language_guided_grasp.launch \
@@ -792,206 +610,279 @@ roslaunch sagittarius_object_color_detector language_guided_grasp.launch \
   image_width:=640 \
   image_height:=480 \
   framerate:=10 \
-  min_grasp_score:=0.35 \
-  publish_annotated_image:=true \
-  save_raw_image:=true \
-  raw_image_path:=/tmp/language_guided_grasp_raw_live.jpg \
-  save_annotated_image:=true \
-  annotated_image_path:=/tmp/language_guided_grasp_annotated_live.jpg \
-  state_topic:=/language_guided_grasp/state \
-  groundingdino_config:=/mnt/d/ai_models/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
-  groundingdino_weights:=/mnt/d/ai_models/GroundingDINO/weights/groundingdino_swint_ogc.pth \
-  search_pose_mode:=camera_down \
-  search_pose_x:=0.20 \
-  search_pose_y:=0.00 \
-  search_pose_z:=0.15 \
-  search_pose_pitch:=1.57 \
-  return_to_search_pose_after_grasp:=false \
-  pick_orientation_mode:=auto \
-  drop_after_grasp:=false \
-  clear_target_after_success:=true
+  vision_config:=$(rospack find sagittarius_object_color_detector)/config/vision_config_pick_front.yaml \
+  place_front_view_vision_config:=$(rospack find sagittarius_object_color_detector)/config/vision_config_place_front.yaml \
+  execute_grasp:=false
 ```
 
-### 测试图片代替相机
-
-```bash
-roslaunch sagittarius_object_color_detector language_guided_grasp_image_test.launch \
-  device:=cuda \
-  execute_grasp:=false \
-  min_grasp_score:=0.35 \
-  save_annotated_image:=true \
-  annotated_image_path:=/tmp/language_guided_grasp_latest.jpg \
-  save_raw_image:=true \
-  raw_image_path:=/tmp/language_guided_grasp_raw_test.jpg \
-  state_topic:=/language_guided_grasp/state \
-  groundingdino_config:=/mnt/d/ai_models/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
-  groundingdino_weights:=/mnt/d/ai_models/GroundingDINO/weights/groundingdino_swint_ogc.pth \
-  search_pose_mode:=none \
-  return_to_search_pose_after_grasp:=false \
-  pick_orientation_mode:=auto \
-  drop_after_grasp:=false \
-  clear_target_after_success:=true
-```
-
-默认测试图：
+确认无误后再把：
 
 ```text
-src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/test_data/sample_red_block.ppm
+execute_grasp:=true
 ```
 
-换自己的图片：
+### 8.5 发送目标文本
+
+新开一个终端，加载环境后发送目标：
 
 ```bash
-roslaunch sagittarius_object_color_detector language_guided_grasp_image_test.launch \
-  test_image:=/绝对路径/你的测试图片.jpg \
-  device:=cuda \
-  execute_grasp:=false \
-  save_annotated_image:=true \
-  annotated_image_path:=/tmp/language_guided_grasp_latest.jpg \
-  save_raw_image:=true \
-  raw_image_path:=/tmp/language_guided_grasp_raw_test.jpg \
-  state_topic:=/language_guided_grasp/state \
-  groundingdino_config:=/mnt/d/ai_models/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
-  groundingdino_weights:=/mnt/d/ai_models/GroundingDINO/weights/groundingdino_swint_ogc.pth \
-  search_pose_mode:=none \
-  return_to_search_pose_after_grasp:=false \
-  pick_orientation_mode:=auto \
-  drop_after_grasp:=false \
-  clear_target_after_success:=true
+rostopic pub -1 /grasp_target_text std_msgs/String "data: 'red block'"
 ```
 
-发送目标文本：
+任务级命令示例：
 
 ```bash
-rostopic pub /grasp_target_text std_msgs/String "data: 'red block'" -1
+rostopic pub -1 /grasp_target_text std_msgs/String "data: 'put each block into the bucket of the same color'"
 ```
 
-其他例子：
+---
 
-```bash
-rostopic pub /grasp_target_text std_msgs/String "data: 'blue cube'" -1
-rostopic pub /grasp_target_text std_msgs/String "data: 'banana'" -1
-rostopic pub /grasp_target_text std_msgs/String "data: 'bottle'" -1
-```
+## 9. 常用参数说明
 
-## 后端冒烟测试
+### 感知相关参数
 
-不连接机械臂，只测模型输出：
+| 参数                 | 含义                 | 推荐值       |
+| ------------------ | ------------------ | --------- |
+| `device`           | GroundingDINO 推理设备 | `cuda`    |
+| `box_threshold`    | 检测框阈值              | `0.35` 起调 |
+| `text_threshold`   | 文本匹配阈值             | `0.25` 起调 |
+| `min_grasp_score`  | 执行前最低置信度           | `0.35` 起调 |
+| `stable_required`  | 单目标抓取稳定帧数          | `5`       |
+| `center_tolerance` | 中心点稳定容差，像素单位       | `8.0`     |
 
-```bash
-cd ~/sagittarius_ws
-source /mnt/d/ai_models/groundingdino-venv/bin/activate
-export PYTHONPATH=/mnt/d/ai_models/GroundingDINO:$PYTHONPATH
+### 执行相关参数
 
-python3 src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/nodes/perception_backend_smoke_test.py \
-  --image src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/test_data/sample_red_block.ppm \
-  --text "red block" \
-  --backend grounding_dino \
-  --config /mnt/d/ai_models/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
-  --weights /mnt/d/ai_models/GroundingDINO/weights/groundingdino_swint_ogc.pth \
-  --device cuda \
-  --output /tmp/language_guided_grasp_smoke.jpg
-```
+| 参数                                  | 含义          | 建议                     |
+| ----------------------------------- | ----------- | ---------------------- |
+| `execute_grasp`                     | 是否真实执行机械臂动作 | 调试先 `false`，确认后 `true` |
+| `pick_z`                            | 抓取高度        | 根据桌面和物体高度调整            |
+| `drop_after_grasp`                  | 抓取后是否执行放置   | 单目标测试先 `false`         |
+| `dynamic_place_z`                   | 动态放置高度      | 根据桶口高度设置               |
+| `return_to_search_pose_after_grasp` | 抓取后是否回观察位   | 当前通常建议 `false`         |
 
-成功时会输出：
+### 观察位相关参数
+
+| 参数                                      | 含义          |
+| --------------------------------------- | ----------- |
+| `search_pose_x/y/z/roll/pitch/yaw`      | 抓取前观察位姿     |
+| `place_front_view_x/y/z/roll/pitch/yaw` | 放置阶段前视角观察位姿 |
+| `left_view_x/y/z/roll/pitch/yaw`        | 左侧观察位姿      |
+| `right_view_x/y/z/roll/pitch/yaw`       | 右侧观察位姿      |
+| `place_scan_view_order`                 | 放置阶段扫描顺序    |
+
+当前最推荐、验证最充分的是：
 
 ```text
-source_model: grounding_dino
-image_size: ...
-num_boxes: ...
-decision_status: selected
-decision_reason: ...
-selected_label: ...
-selected_score: ...
-selected_bbox_xyxy: ...
-selected_center: ...
-annotated_output: /tmp/language_guided_grasp_smoke.jpg
+place_scan_view_order:=front
 ```
 
-## 推荐演示场景
+left/right 多视角框架已经存在，但需要根据现场相机视野和机械臂可达空间继续实测和标定。
 
-1. 抓取颜色加类别目标：`red block`
-2. 抓取类别目标：`banana`
-3. 抓取类别目标：`bottle`
-4. 多物体场景中只抓取指定目标：例如画面里同时有方块和瓶子，只发布 `bottle`
-5. 请求不存在的目标：例如发布 `airplane`，确认状态为 `no_detection` 且机械臂不动作
-6. 静态图片演示：运行 `language_guided_grasp_image_test.launch`，查看 `/tmp/language_guided_grasp_latest.jpg`
-7. 可选 pick-and-place：设置 `drop_after_grasp:=true`，抓取成功后放到固定位置
+---
 
-常用目标文本：
+## 10. 调试输出
 
-```bash
-rostopic pub /grasp_target_text std_msgs/String "data: 'red block'" -1
-rostopic pub /grasp_target_text std_msgs/String "data: 'blue cube'" -1
-rostopic pub /grasp_target_text std_msgs/String "data: 'banana'" -1
-rostopic pub /grasp_target_text std_msgs/String "data: 'bottle'" -1
-rostopic pub /grasp_target_text std_msgs/String "data: 'airplane'" -1
-```
-
-演示时建议同时打开两个观察窗口：
+### 状态话题
 
 ```bash
 rostopic echo /language_guided_grasp/state
-rostopic hz /language_guided_grasp/annotated_image
 ```
 
-如果是静态图片模式，也可以直接查看保存的标注图：
+### 标注图话题
+
+```text
+/language_guided_grasp/annotated_image
+```
+
+### 常见保存图片
+
+```text
+/tmp/language_guided_grasp_raw_single_gpu.jpg
+/tmp/language_guided_grasp_single_gpu.jpg
+/tmp/language_guided_grasp_latest.jpg
+```
+
+含义：
+
+* `raw`：原始相机画面
+* `single_gpu` / `latest`：带检测框、置信度、中心点和状态的标注图
+
+如果机械臂抓偏，优先检查：
+
+1. 原始图中目标是否清晰可见。
+2. 标注图中检测框是否正确。
+3. refined center 是否落在目标中心附近。
+4. 日志中的 pixel center 是否合理。
+5. mapped x/y 是否符合桌面实际位置。
+6. 当前使用的 `vision_config` 是否对应当前观察位。
+
+---
+
+## 11. 常见问题
+
+### 11.1 GroundingDINO 检测到了目标，但机械臂抓偏
+
+优先检查标定。
+
+如果检测框正确、中心点正确，但机械臂落点偏，问题通常不是模型，而是：
+
+* 使用了错误的 `vision_config*.yaml`
+* 相机位置变化但没有重新标定
+* 观察位姿变化但仍使用旧标定
+* 像素中心和标定时的中心定义不一致
+
+当前版本已经尽量让标定和运行时都使用 refined center，但如果你手动改过中心计算逻辑，需要重新标定。
+
+### 11.2 MoveIt 规划成功但不执行
+
+如果出现：
+
+```text
+Computed path is not valid
+Start state appears to be in collision
+Found a contact between link1 and link5
+```
+
+说明 MoveIt 认为当前状态或目标路径存在自碰撞。常见原因：
+
+* 初始姿态不合适
+* 观察位姿太低或太折叠
+* joint state 与真实机械臂不一致
+* 某些关节接近限位
+
+优先在 RViz 中查看机器人模型是否一开始就处于碰撞状态。不要直接禁用碰撞检测，除非确认只是碰撞模型误判。
+
+### 11.3 WSL 中找不到机械臂串口
+
+先检查：
 
 ```bash
-xdg-open /tmp/language_guided_grasp_latest.jpg
+lsusb
+ls -l /dev/ttyACM* /dev/sagittarius
 ```
 
-## 如何增加新的感知后端
-
-新增模型时建议只改感知层：
-
-1. 在 `nodes/perception_framework/backends/` 新增一个文件，例如 `yolo_world.py`
-2. 继承 `BasePerceptionBackend`
-3. 实现 `infer(self, image_bgr, text_prompt) -> DetectionResult`
-4. 在 `backend_factory.py` 注册 backend 名称
-5. 启动时传入 `perception_backend:=你的后端名`
-
-新后端不要直接控制机械臂，不要做像素到机械臂坐标映射，也不要直接调用 `sgr_ctrl`。这些都由主编排节点统一处理。
-
-## 未来工作 / Planned Extensions
-
-后续如果继续扩展，建议优先沿着这些方向推进：
-
-- 插入更多开放词汇感知后端，例如 YOLO-World、OWL-ViT、Grounded-SAM，并通过 `perception_backend` 参数切换
-- 把语言目标从单一短语扩展到更复杂指令，例如“抓左边的瓶子”“抓离机械臂最近的香蕉”
-- 增加更清晰的双机通信方案：感知机器只发布轻量结果，控制机器只负责映射和执行
-- 在原生 Ubuntu 或更稳定硬件环境下验证真实相机闭环，降低 WSL usbipd 带来的运行不确定性
-- 改进相机标定和手眼标定，让像素到机械臂坐标的映射更稳健
-- 扩展 pick-and-place 策略，例如根据类别选择不同放置区，而不是固定放置点
-- 增加更完整的状态机和恢复策略，例如抓取失败后自动回退、重新检测或请求人工确认
-- 在当前语言抓取基础上进一步接入更强的 VLM / 多模态策略，用视觉语言模型产生更高层任务决策
-
-## 兼容说明
-
-为了不打断之前已经能跑的命令，以下旧入口仍然保留：
+再运行：
 
 ```bash
-roslaunch sagittarius_object_color_detector color_classification.launch
-roslaunch sagittarius_object_color_detector color_classification_image_test.launch
-rosrun sagittarius_object_color_detector color_classification.py
+bash src/sagittarius_arm_ros/sagittarius_perception/sagittarius_object_color_detector/scripts/ensure_sagittarius_serial.sh
 ```
 
-但这些只是兼容入口，推荐新命令统一使用：
+如果使用 WSL2，需要在 Windows PowerShell 中确认 `usbipd list` 里机械臂已 attach。
 
-```bash
-roslaunch sagittarius_object_color_detector language_guided_grasp.launch
-roslaunch sagittarius_object_color_detector language_guided_grasp_image_test.launch
-rosrun sagittarius_object_color_detector language_guided_grasp.py
+### 11.4 相机和机械臂同时连接不稳定
+
+这是 WSL2 + USB 透传环境下的常见问题。建议：
+
+* 正式演示优先使用原生 Ubuntu。
+* 或者使用更稳定的 UVC 摄像头。
+* 或者把大模型推理和机械臂控制拆到两台机器上，通过 ROS 通信。
+
+---
+
+## 12. 当前限制
+
+当前系统还不是完整工业级抓取系统，主要限制包括：
+
+* 当前最稳定的是前视角 `front-only` 模式。
+* left/right 多观察位框架已经支持，但仍需要更多实机标定和验证。
+* 目前像素到机械臂坐标使用线性平面映射，适合桌面平面任务，不适合复杂 3D 场景。
+* 当前没有深度相机，无法直接估计目标高度和完整 6D pose。
+* 放置阶段对 bucket 的可见性比较敏感。
+* GroundingDINO 对 prompt、光照、遮挡和目标外观仍然敏感。
+* WSL2 下 USB 相机和串口透传可能不稳定。
+* 目前任务解析是轻量规则式拆解，不是完整 LLM planner。
+
+---
+
+## 13. 未来方向
+
+### 13.1 感知方向
+
+* 接入 YOLO-World、OWL-ViT、Grounded-SAM 等可替换后端。
+* 引入 segmentation mask，而不是只依赖 bounding box。
+* 将 HSV center refinement 升级为更通用的 mask center / grasp point estimation。
+* 增加目标跟踪，减少每帧重复检测带来的抖动。
+
+### 13.2 标定与空间理解
+
+* 完成 left/right 观察位的实机九点标定。
+* 增加更多桌面点，评估不同区域误差。
+* 从线性平面映射升级到相机外参标定。
+* 引入深度相机或 AprilTag 标定板。
+* 支持更稳定的 hand-eye calibration。
+
+### 13.3 任务规划
+
+* 将当前规则式 `task_parsing.py` 升级为更通用的语言任务解析器。
+* 支持更多任务形式，例如：
+
+```text
+put the red block to the left of the blue bucket
+stack the blue block on the red block
+move all blocks to the tray
 ```
 
-## 调试结论
+* 增加失败恢复策略，例如目标未找到时自动换视角或重新扫描。
 
-当前代码主链路已经完成，剩余风险主要来自运行环境：
+### 13.4 运动执行
 
-- WSL2 下机械臂串口和摄像头同时透传时可能导致底层串口通信不稳定
-- 如果真实相机闭环不稳定，优先用 `language_guided_grasp_image_test.launch` 验证软件链路
-- 要做正式演示，优先考虑原生 Ubuntu 或外接普通 UVC 摄像头
+* 优化 MoveIt 规划参数，减少自碰撞和奇异姿态。
+* 增加 pre-grasp、grasp、lift、place 的明确阶段。
+* 为不同物体类型设置不同抓取高度和夹爪宽度。
+* 增加执行前仿真检查和可达性验证。
 
-## 许可证
+### 13.5 系统部署
 
-原始 Sagittarius 代码来自 NXROBO Sagittarius ROS 工作空间。本仓库在其基础上增加语言目标抓取和可插拔感知后端改造。
+* 从 WSL2 迁移到原生 Ubuntu，提高相机和串口稳定性。
+* 支持双机部署：GPU 电脑负责大模型推理，机械臂主机负责 ROS 控制。
+* 将实验流程整理为一键启动脚本。
+* 增加更规范的日志记录、实验结果保存和 demo 复现实验文档。
+
+---
+
+## 14. 建议演示流程
+
+推荐演示时按以下顺序：
+
+1. 启动机械臂和相机。
+2. 设置 `execute_grasp:=false`，只看检测和映射。
+3. 发送：
+
+```text
+red block
+```
+
+4. 查看 annotated image，确认检测框和中心点正确。
+5. 确认 mapped x/y 合理。
+6. 设置 `execute_grasp:=true`，执行单目标抓取。
+7. 再测试：
+
+```text
+pick red block and place it into red bucket
+```
+
+8. 最后测试多步任务：
+
+```text
+put each block into the bucket of the same color
+```
+
+这样可以逐步暴露问题，避免一开始就让机械臂执行复杂任务。
+
+---
+
+## 15. 项目总结
+
+当前 `main` 分支已经实现了一个可运行的语言引导机械臂抓取原型。它的特点是：
+
+* 使用 GroundingDINO 将自然语言目标和图像目标联系起来。
+* 使用 HSV / 轮廓方法对检测中心进行工程化修正。
+* 使用九点标定建立图像像素和机械臂工作平面的映射。
+* 保留 Sagittarius 原有 MoveIt / SDK / `sgr_ctrl` 执行链路。
+* 已经在真实机械臂上完成多步同色抓取 / 放置的部分成功验证。
+
+当前最成熟的模式是：
+
+```text
+front-only + pick_front/place_front 分离标定 + GroundingDINO + HSV
+```
