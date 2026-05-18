@@ -6,6 +6,37 @@ Language-guided semantic grasping system for a Sagittarius robotic arm using ROS
 
 This project turns the original Sagittarius color-grasping example into a real-robot semantic manipulation pipeline. A user provides a natural-language target or a simple task such as `put each block into the bucket of the same color`; the system captures a camera frame, detects language-conditioned objects with GroundingDINO, refines grasp centers with HSV/contour processing, maps image coordinates into the calibrated robot work plane, and executes grasp/place actions through the existing Sagittarius ROS1, MoveIt, and `sgr_ctrl` control chain.
 
+## Demo
+
+### Demo 1 — Single-target pick/place
+[![Demo 1](https://img.youtube.com/vi/4V7Y5Qn2Jmw/0.jpg)](https://www.youtube.com/watch?v=4V7Y5Qn2Jmw)
+
+Baseline end-to-end run: detect a blue block by language prompt and place it into a red bucket on the real arm.
+
+---
+
+### Demo 2 — Multi-step stress test with safe failure behavior
+[![Demo 2](https://img.youtube.com/vi/vSotKdQC2tA/0.jpg)](https://www.youtube.com/watch?v=vSotKdQC2tA)
+
+Task: `put each block into the bucket of the same color` (red, blue, green).
+
+| Step | Result | Reason |
+|------|--------|--------|
+| Red block → red bucket | **Failed** | Arm observation angle caused incomplete bucket detection; no stable center found — system rejected execution |
+| Blue block → blue bucket | **Succeeded** | Detection stable, placement completed |
+| Green block → green bucket | **Failed (intentional)** | Bucket was moved during the task to prevent stable frame accumulation — system correctly refused to execute |
+
+The test was designed to push edge cases. The failures show the stability and confidence gates working as intended: the arm only moves when detection is reliable enough to act on.
+
+---
+
+### Demo 3 — Open-vocabulary generalization: placing onto a palm
+[![Demo 3](https://img.youtube.com/vi/i96AO-EEe4g/0.jpg)](https://www.youtube.com/watch?v=i96AO-EEe4g)
+
+Target: a human palm — not a bucket, not a trained object category. GroundingDINO identified it correctly from the language prompt, and the arm completed the placement. Shows that the open-vocabulary detection backend generalizes beyond the block-and-bucket setup without any retraining.
+
+---
+
 ## Highlights
 
 - Real Sagittarius robotic arm project, not only an offline vision demo.
@@ -42,29 +73,6 @@ My work focused on turning the baseline Sagittarius examples into an integrated 
 | Execution | Pick/place state machine, stable-frame locking, safe execution gates |
 | Platform | Ubuntu 20.04 / WSL2 Ubuntu 20.04, CUDA-capable GPU recommended |
 
-## Demo / Results
-
-Demo media placeholder: add a short video or GIF showing the real arm detecting a language-specified block, refining the center point, grasping it, and placing it near the matching bucket.
-
-Latest documented real-robot test:
-
-```text
-Task: put each block into the bucket of the same color
-
-1. red block   -> red bucket    grasp and placement succeeded
-2. blue block  -> blue bucket   grasp and placement succeeded
-3. green block -> green bucket
-   - green block grasp succeeded
-   - green bucket was not detected during placement, so the system failed safely
-```
-
-Interpretation:
-
-- The front-view semantic grasping chain can complete multi-step real-robot tasks.
-- GroundingDINO plus HSV/contour center refinement gives a more useful grasp point than a raw box center.
-- Separate pick/place calibration is useful because the arm viewpoint and target type differ across stages.
-- Placement is still sensitive to bucket visibility.
-
 ## Limitations and Next Steps
 
 This is a research/engineering prototype rather than an industrial grasping product.
@@ -82,7 +90,6 @@ Current limitations:
 
 Next steps:
 
-- Add demo media and representative annotated frames.
 - Validate left/right viewpoints with real 3x3 calibration data.
 - Replace or augment box centers with segmentation-mask or grasp-point estimation.
 - Add depth sensing or AprilTag/hand-eye calibration for stronger spatial reasoning.
@@ -99,7 +106,7 @@ The sections below preserve the setup, calibration, launch, testing, and debuggi
 
 基于 Sagittarius 机械臂、ROS1、MoveIt、GroundingDINO 与相机标定的语言引导语义抓取 / 放置项目。
 
-本项目的目标不是单纯做一个“颜色块识别 demo”，而是把原始 Sagittarius 机械臂的 HSV 颜色抓取例程改造成一个更接近真实机器人应用的语义抓取系统：用户用自然语言指定目标，视觉模型在相机图像中识别目标，系统将像素位置映射到机械臂工作平面坐标，并调用原有 MoveIt / `sgr_ctrl` 执行抓取与放置。
+本项目的目标不是单纯做一个"颜色块识别 demo"，而是把原始 Sagittarius 机械臂的 HSV 颜色抓取例程改造成一个更接近真实机器人应用的语义抓取系统：用户用自然语言指定目标，视觉模型在相机图像中识别目标，系统将像素位置映射到机械臂工作平面坐标，并调用原有 MoveIt / `sgr_ctrl` 执行抓取与放置。
 
 ## System Flow / 项目概览
 
